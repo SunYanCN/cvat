@@ -1,28 +1,61 @@
-// Copyright (C) 2020-2021 Intel Corporation
+// Copyright (C) 2020-2022 Intel Corporation
+// Copyright (C) CVAT.ai Corporation
 //
 // SPDX-License-Identifier: MIT
 
-@import 'base.scss';
+@import 'base';
 
 .cvat-standard-workspace.ant-layout {
     height: 100%;
+
+    > .ant-layout-content {
+        overflow: hidden hidden;
+    }
 }
 
 .cvat-objects-sidebar-sider {
     top: 0;
     right: 0;
-    left: auto;
-    background-color: $background-color-2;
     border-left: 1px solid $border-color-1;
     border-bottom: 1px solid $border-color-1;
-    border-radius: 4px 0 0 4px;
+    border-radius: $border-radius-base 0 0 $border-radius-base;
     z-index: 2;
+    position: absolute;
+    padding: 8px;
+    background: white;
+    transition: box-shadow 0.5s;
+
+    &:hover {
+        box-shadow: $box-shadow-base;
+    }
 }
 
 .cvat-objects-sidebar {
     height: 100%;
-    overflow-y: auto;
-    overflow-x: hidden;
+    overflow: hidden auto;
+
+    > .ant-layout-sider-children {
+        display: flex;
+        flex-direction: column;
+
+        > .cvat-objects-sidebar-tabs {
+            flex-grow: 1;
+            padding-top: $grid-unit-size;
+            height: 0;
+
+            > div {
+                display: flex;
+
+                div[role="tab"] {
+                    color: $text-color;
+                }
+
+                div[role="tabpanel"] {
+                    height: 100%;
+                }
+            }
+        }
+    }
 
     &.ant-layout-sider-collapsed {
         overflow: initial;
@@ -33,13 +66,18 @@
     transform: scaleX(-1);
 }
 
-.cvat-canvas-controls-sidebar {
-    background-color: $background-color-2;
+.ant-layout-sider.cvat-canvas-controls-sidebar {
+    background: $background-color-2;
     border-right: 1px solid $border-color-1;
     overflow: hidden;
+
+    div:has(span[role="img"]) {
+        text-align: center;
+    }
 }
 
 .cvat-cursor-control,
+.cvat-select-control,
 .cvat-move-control,
 .cvat-rotate-canvas-control,
 .cvat-fit-control,
@@ -48,38 +86,48 @@
 .cvat-draw-polygon-control,
 .cvat-draw-polyline-control,
 .cvat-draw-points-control,
+.cvat-draw-ellipse-control,
+.cvat-draw-mask-control,
 .cvat-draw-cuboid-control,
+.cvat-draw-skeleton-control,
 .cvat-setup-tag-control,
 .cvat-merge-control,
 .cvat-group-control,
+.cvat-join-control,
+.cvat-slice-control,
 .cvat-split-track-control,
 .cvat-issue-control,
 .cvat-tools-control,
 .cvat-extra-controls-control,
 .cvat-opencv-control,
-.cvat-context-image-control {
-    border-radius: 3.3px;
-    transform: scale(0.65);
+.cvat-snap-tools-control,
+.cvat-audio-interval-region-control,
+.cvat-audio-split-control,
+.cvat-audio-loop-control {
+    border-radius: $border-radius-base;
+    transition: $annotation-view-control-transition;
+    transform: scale(0.75);
     padding: 2px;
 
     &:hover:not(.cvat-disabled-canvas-control) {
         background: $header-color;
-        transform: scale(0.75);
+        transform: scale(0.8);
     }
 
     &:active:not(.cvat-disabled-canvas-control) {
-        transform: scale(0.65);
+        transform: scale(0.75);
     }
 
     > svg {
-        transform: scale(0.8);
+        width: 32px;
+        height: 32px;
     }
-}
 
-.cvat-extra-controls-control {
-    > svg {
-        width: 40px;
-        height: 40px;
+    &.cvat-snap-tools-active {
+        svg rect {
+            fill: #40a9ff;
+            stroke: #40a9ff;
+        }
     }
 }
 
@@ -94,8 +142,14 @@
 
 .cvat-rotate-canvas-controls-left,
 .cvat-rotate-canvas-controls-right {
+    transition: $annotation-view-control-transition;
+
+    > svg {
+        width: 32px;
+        height: 32px;
+    }
+
     transform: scale(0.65);
-    border-radius: 5px;
 
     &:hover {
         transform: scale(0.75);
@@ -107,7 +161,7 @@
 }
 
 .cvat-rotate-canvas-popover {
-    .ant-popover-inner-content {
+    .ant-popover-content > .ant-popover-inner {
         padding: 0;
     }
 }
@@ -115,8 +169,9 @@
 .cvat-draw-shape-popover,
 .cvat-opencv-control-popover,
 .cvat-setup-tag-popover,
-.cvat-tools-control-popover {
-    .ant-popover-inner-content {
+.cvat-tools-control-popover,
+.cvat-snap-tools-control-popover {
+    .ant-popover-content > .ant-popover-inner {
         padding: 0;
     }
 }
@@ -124,7 +179,46 @@
 .cvat-tools-track-button,
 .cvat-tools-interact-button {
     width: 100%;
-    margin-top: 10px;
+    margin-top: $grid-unit-size;
+}
+
+.cvat-tools-interactor-setups {
+    > div {
+        margin-top: $grid-unit-size * 2;
+        width: 100%;
+
+        > .ant-switch {
+            margin-right: $grid-unit-size;
+        }
+    }
+}
+
+.cvat-tools-interactor-extras {
+    margin-top: $grid-unit-size * 2;
+}
+
+.cvat-interactors-tips-icon-container {
+    text-align: center;
+    font-size: 20px;
+}
+
+.cvat-interactors-setups-container {
+    margin-top: $grid-unit-size;
+    margin-bottom: $grid-unit-size;
+
+    > button {
+        margin-right: $grid-unit-size;
+    }
+}
+
+.cvat-interactor-tip-container {
+    width: $grid-unit-size * 40;
+    text-align: center;
+    border-radius: $border-radius-base;
+}
+
+.cvat-interactor-tip-image {
+    width: $grid-unit-size * 37;
 }
 
 .cvat-draw-shape-popover-points-selector {
@@ -138,10 +232,29 @@
     border-radius: $grid-unit-size;
     background: $background-color-2;
 
+    .ant-tabs {
+        margin-top: $grid-unit-size * 2;
+    }
+
     .ant-tabs-tab {
         width: $grid-unit-size * 14;
         justify-content: center;
     }
+
+    .ant-progress {
+        margin-left: $grid-unit-size;
+    }
+}
+
+.cvat-automatic-annotation-region-of-interest-overlay {
+    position: absolute;
+    left: 0;
+    top: 0;
+    background: rgba(0, 0, 0, 80%);
+    background-color: rgba(128, 128, 128, 60%);
+    background-image: linear-gradient(45deg, rgba(255, 255, 255, 18%) 25%, transparent 25%), linear-gradient(-45deg, rgba(255, 255, 255, 18%) 25%, transparent 25%), linear-gradient(45deg, transparent 75%, rgba(255, 255, 255, 18%) 75%), linear-gradient(-45deg, transparent 75%, rgba(255, 255, 255, 18%) 75%);
+    background-size: 16px 16px;
+    background-position: 0 0, 0 8px, 8px -8px, -8px 0;
 }
 
 .cvat-opencv-initialization-button {
@@ -163,43 +276,183 @@
     }
 }
 
-.cvat-setup-tag-popover-content,
-.cvat-draw-shape-popover-content {
+.cvat-opencv-image-tool {
+    @extend .cvat-opencv-drawing-tool;
+}
+
+.cvat-opencv-image-tool-active {
+    color: #40a9ff;
+    border-color: #40a9ff;
+}
+
+.cvat-opencv-tracker-select {
+    margin-bottom: $grid-unit-size * 2;
+    width: 100%;
+}
+
+.cvat-opencv-tracker-help-message {
+    @extend .cvat-opencv-tracker-select;
+}
+
+.cvat-opencv-tracker-content {
+    margin-top: $grid-unit-size;
+}
+
+.cvat-popover-content {
     padding: $grid-unit-size;
     border-radius: $grid-unit-size;
     background: $background-color-2;
-    width: 34 * $grid-unit-size;
+    width: $grid-unit-size * 32;
 
     > div {
         margin-top: $grid-unit-size;
     }
+}
+
+.cvat-setup-tag-popover-content {
+    @extend .cvat-popover-content;
+
+    .ant-select {
+        width: 27 * $grid-unit-size;
+    }
+
+    > div:last-child {
+        margin-bottom: $grid-unit-size;
+    }
+}
+
+.cvat-draw-shape-popover-content {
+    @extend .cvat-popover-content;
 
     > div:nth-child(3) > div > div {
         width: 100%;
     }
 
-    > div:last-child {
-        span {
-            width: 100%;
+    > div:last-child > div {
+        display: flex;
+        justify-content: space-between;
+
+        &:has(.cvat-draw-mask-shape-button) {
+            justify-content: space-around;
         }
 
         button {
-            width: 100%;
+            width: $grid-unit-size * 15;
+        }
+    }
+}
 
-            &:nth-child(1) {
-                border-radius: 3px 0 0 3px;
-            }
+.cvat-draw-shape-popover-drawing-method-selector {
+    display: flex;
+    width: 100%;
 
-            &:nth-child(2) {
-                border-radius: 0 3px 3px 0;
+    .ant-radio-button-wrapper {
+        flex: 1;
+        height: $grid-unit-size * 4;
+        line-height: $grid-unit-size * 4 - 2;
+        padding: 0 $grid-unit-size;
+        text-align: center;
+
+        &::before {
+            background-color: #d9d9d9;
+        }
+
+        &.ant-radio-button-wrapper-checked {
+            z-index: 1;
+            color: $notification-border-color-1;
+            border-color: $notification-border-color-1;
+            box-shadow: none;
+
+            &::before {
+                background-color: $notification-border-color-1;
             }
         }
     }
 }
 
 .cvat-propagate-confirm {
-    > .ant-input-number {
-        width: 70px;
-        margin: 0 5px;
+    > .ant-row {
+        align-items: flex-start;
+        margin-bottom: $grid-unit-size * 2;
     }
+
+    .ant-input-number {
+        margin-left: $grid-unit-size;
+        margin-right: $grid-unit-size;
+        width: $grid-unit-size * 7;
+    }
+
+    .cvat-propagate-slider-wrapper {
+        height: $grid-unit-size;
+    }
+
+    .cvat-propagate-up-to-wrapper > div:first-child {
+        margin-bottom: $grid-unit-size;
+    }
+}
+
+.cvat-snap-tools-control-popover-content {
+    @extend .cvat-popover-content;
+
+    width: auto;
+    min-width: unset;
+
+    .cvat-snap-tools-row {
+        margin-top: $grid-unit-size;
+
+        > .ant-col:not(:last-child) {
+            margin-right: $grid-unit-size * 1.5;
+        }
+
+        .ant-checkbox-wrapper {
+            align-items: center;
+
+            .ant-checkbox {
+                top: 0;
+            }
+        }
+    }
+}
+
+.cvat-snap-to-contour-button,
+.cvat-snap-to-point-button {
+    padding: $grid-unit-size;
+    width: $grid-unit-size * 5;
+    height: $grid-unit-size * 5;
+
+    > span > i {
+        font-size: 16px;
+    }
+}
+
+.cvat-snap-tool-active {
+    color: #40a9ff;
+    border-color: #40a9ff;
+}
+
+.cvat-remove-object-confirm-wrapper {
+    display: flex;
+    justify-content: center;
+    margin-top: $grid-unit-size * 2;
+}
+
+.cvat-tools-control:not(.cvat-disabled-canvas-control) {
+    &:hover,
+    &:focus-visible {
+        background: rgba(#ff4800, 0.09);
+    }
+
+    &:focus-visible {
+        outline: 2px solid #ff4800;
+        outline-offset: 2px;
+    }
+
+    &.cvat-active-canvas-control {
+        background: rgba(#ff4800, 0.14);
+        box-shadow: inset 0 0 0 1px rgba(#ff4800, 0.25);
+    }
+}
+
+.cvat-tools-control.cvat-disabled-canvas-control > svg {
+    filter: grayscale(1) opacity(0.45);
 }

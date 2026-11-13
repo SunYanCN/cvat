@@ -1,4 +1,4 @@
-# Copyright (C) 2018-2019 Intel Corporation
+# Copyright (C) 2018-2022 Intel Corporation
 #
 # SPDX-License-Identifier: MIT
 
@@ -20,29 +20,41 @@ Including another URLconf
 
 from django.apps import apps
 from django.contrib import admin
-from django.urls import path, include
+from django.urls import include, path
 
 urlpatterns = [
-    path('admin/', admin.site.urls),
-    path('', include('cvat.apps.engine.urls')),
-    path('django-rq/', include('django_rq.urls')),
-    path('documentation/', include('cvat.apps.documentation.urls')),
+    path("admin/", admin.site.urls),
+    path("", include("cvat.apps.engine.urls")),
+    path("", include("cvat.apps.redis_handler.urls")),
+    path("django-rq/", include("django_rq.urls")),
 ]
 
-if apps.is_installed('cvat.apps.dataset_repo'):
-    urlpatterns.append(path('git/repository/', include('cvat.apps.dataset_repo.urls')))
+if apps.is_installed("cvat.apps.log_viewer"):
+    urlpatterns.append(path("", include("cvat.apps.log_viewer.urls")))
 
-if apps.is_installed('cvat.apps.log_viewer'):
-    urlpatterns.append(path('analytics/', include('cvat.apps.log_viewer.urls')))
+if apps.is_installed("cvat.apps.events"):
+    urlpatterns.append(path("api/", include("cvat.apps.events.urls")))
 
-if apps.is_installed('cvat.apps.lambda_manager'):
-    urlpatterns.append(path('', include('cvat.apps.lambda_manager.urls')))
+if apps.is_installed("cvat.apps.lambda_manager"):
+    urlpatterns.append(path("", include("cvat.apps.lambda_manager.urls")))
 
-if apps.is_installed('cvat.apps.opencv'):
-    urlpatterns.append(path('opencv/', include('cvat.apps.opencv.urls')))
+if apps.is_installed("cvat.apps.webhooks"):
+    urlpatterns.append(path("api/", include("cvat.apps.webhooks.urls")))
 
-if apps.is_installed('silk'):
-    urlpatterns.append(path('profiler/', include('silk.urls')))
+if apps.is_installed("cvat.apps.quality_control"):
+    urlpatterns.append(path("api/", include("cvat.apps.quality_control.urls")))
 
-if apps.is_installed('cvat.apps.training'):
-    urlpatterns.append(path('api/v1/predict/', include('cvat.apps.training.urls')))
+if apps.is_installed("silk"):
+    urlpatterns.append(path("profiler/", include("silk.urls")))
+
+if apps.is_installed("health_check"):
+    urlpatterns.append(path("api/server/health/", include("health_check.urls")))
+
+if apps.is_installed("cvat.apps.consensus"):
+    urlpatterns.append(path("api/", include("cvat.apps.consensus.urls")))
+
+if apps.is_installed("cvat.apps.access_tokens"):
+    urlpatterns.append(path("api/", include("cvat.apps.access_tokens.urls")))
+
+if apps.is_installed("cvat.apps.growth"):
+    urlpatterns.append(path("api/", include("cvat.apps.growth.urls")))

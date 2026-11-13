@@ -1,18 +1,38 @@
-// Copyright (C) 2020-2021 Intel Corporation
+// Copyright (C) 2020-2022 Intel Corporation
+// Copyright (C) CVAT.ai Corporation
 //
 // SPDX-License-Identifier: MIT
 
 import React, { RefObject } from 'react';
 import { Row, Col } from 'antd/lib/grid';
-import { PercentageOutlined } from '@ant-design/icons';
+import { PercentageOutlined, QuestionCircleOutlined } from '@ant-design/icons';
 import Input from 'antd/lib/input';
+import Space from 'antd/lib/space';
+import Switch from 'antd/lib/switch';
+import Tooltip from 'antd/lib/tooltip';
+import Radio from 'antd/lib/radio';
 import Checkbox from 'antd/lib/checkbox';
 import Form, { FormInstance, RuleObject, RuleRender } from 'antd/lib/form';
 import Text from 'antd/lib/typography/Text';
 import { Store } from 'antd/lib/form/interface';
-
 import CVATTooltip from 'components/common/cvat-tooltip';
 import patterns from 'utils/validation-patterns';
+import { isInteger } from 'utils/validation';
+import SourceStorageField from 'components/storage/source-storage-field';
+import TargetStorageField from 'components/storage/target-storage-field';
+
+import {
+    getCore, Storage, StorageData, StorageLocation,
+} from 'cvat-core-wrapper';
+
+const core = getCore();
+
+export enum SortingMethod {
+    LEXICOGRAPHICAL = 'lexicographical',
+    NATURAL = 'natural',
+    PREDEFINED = 'predefined',
+    RANDOM = 'random',
+}
 
 export interface AdvancedConfiguration {
     bugTracker?: string;
@@ -22,26 +42,112 @@ export interface AdvancedConfiguration {
     startFrame?: number;
     stopFrame?: number;
     frameFilter?: string;
-    lfs: boolean;
-    repository?: string;
-    useZipChunks: boolean;
+    useZipChunks?: boolean;
     dataChunkSize?: number;
-    useCache: boolean;
+    useCache?: boolean;
     copyData?: boolean;
+    sortingMethod?: SortingMethod;
+    useProjectSourceStorage?: boolean;
+    useProjectTargetStorage?: boolean;
+    initialReplicas?: number;
+    sourceStorage: StorageData;
+    targetStorage: StorageData;
 }
+
+export enum AdvancedConfigurationSection {
+    SORTING = 'sorting',
+    COPY_DATA = 'copyData',
+    CHUNKING = 'chunking',
+    IMAGE_QUALITY = 'imageQuality',
+    FRAME_RANGE = 'frameRange',
+    CHUNK_SIZE = 'chunkSize',
+    REPLICAS = 'replicas',
+    BUG_TRACKER = 'bugTracker',
+    STORAGE = 'storage',
+}
+
+export const CV_ADVANCED_CONFIGURATION_SECTIONS = [
+    AdvancedConfigurationSection.SORTING,
+    AdvancedConfigurationSection.COPY_DATA,
+    AdvancedConfigurationSection.CHUNKING,
+    AdvancedConfigurationSection.IMAGE_QUALITY,
+    AdvancedConfigurationSection.FRAME_RANGE,
+    AdvancedConfigurationSection.CHUNK_SIZE,
+    AdvancedConfigurationSection.REPLICAS,
+    AdvancedConfigurationSection.BUG_TRACKER,
+    AdvancedConfigurationSection.STORAGE,
+] as const;
+
+export const AUDIO_ADVANCED_CONFIGURATION_SECTIONS = [
+    AdvancedConfigurationSection.REPLICAS,
+    AdvancedConfigurationSection.BUG_TRACKER,
+    AdvancedConfigurationSection.STORAGE,
+] as const;
 
 const initialValues: AdvancedConfiguration = {
     imageQuality: 70,
-    lfs: false,
     useZipChunks: true,
     useCache: true,
     copyData: false,
+    sortingMethod: SortingMethod.LEXICOGRAPHICAL,
+    useProjectSourceStorage: true,
+    useProjectTargetStorage: true,
+    initialReplicas: 0,
+
+    sourceStorage: {
+        location: StorageLocation.LOCAL,
+        cloudStorageId: undefined,
+    },
+    targetStorage: {
+        location: StorageLocation.LOCAL,
+        cloudStorageId: undefined,
+    },
 };
 
+const defaultFieldsBySection = {
+    [AdvancedConfigurationSection.SORTING]: ['sortingMethod'],
+    [AdvancedConfigurationSection.COPY_DATA]: ['copyData'],
+    [AdvancedConfigurationSection.CHUNKING]: ['useZipChunks', 'useCache'],
+    [AdvancedConfigurationSection.IMAGE_QUALITY]: ['imageQuality'],
+    [AdvancedConfigurationSection.FRAME_RANGE]: [],
+    [AdvancedConfigurationSection.CHUNK_SIZE]: [],
+    [AdvancedConfigurationSection.REPLICAS]: ['initialReplicas'],
+    [AdvancedConfigurationSection.BUG_TRACKER]: [],
+    [AdvancedConfigurationSection.STORAGE]: [
+        'useProjectSourceStorage',
+        'useProjectTargetStorage',
+        'sourceStorage',
+        'targetStorage',
+    ],
+} as const satisfies Record<AdvancedConfigurationSection, readonly (keyof AdvancedConfiguration)[]>;
+
+type DefaultFieldsForSections<Sections extends readonly AdvancedConfigurationSection[]> =
+    (typeof defaultFieldsBySection)[Sections[number]][number];
+
+export function getAdvancedConfigurationInitialValues<Sections extends readonly AdvancedConfigurationSection[]>(
+    visibleSections: Sections,
+): Pick<AdvancedConfiguration, DefaultFieldsForSections<Sections>> {
+    const fields = visibleSections.flatMap((section) => defaultFieldsBySection[section]);
+
+    return (
+        Object.fromEntries(fields.map((field) => [field, initialValues[field]]))
+    ) as Pick<AdvancedConfiguration, DefaultFieldsForSections<Sections>>;
+}
+
 interface Props {
-    onSubmit(values: AdvancedConfiguration): void;
-    installedGit: boolean;
-    activeFileManagerTab: string;
+    onSubmit(values: AdvancedConfiguration): Promise<void>;
+    onChangeUseProjectSourceStorage(value: boolean): void;
+    onChangeUseProjectTargetStorage(value: boolean): void;
+    onChangeSourceStorageLocation: (value: StorageLocation) => void;
+    onChangeTargetStorageLocation: (value: StorageLocation) => void;
+    onChangeSortingMethod(value: SortingMethod): void;
+    projectId: number | null;
+    useProjectSourceStorage?: boolean;
+    useProjectTargetStorage?: boolean;
+    activeFileManagerTab?: string;
+    sourceStorageLocation: StorageLocation;
+    targetStorageLocation: StorageLocation;
+    visibleSections?: readonly AdvancedConfigurationSection[];
 }
 
 function validateURL(_: RuleObject, value: string): Promise<void> {
@@ -51,47 +157,6 @@ function validateURL(_: RuleObject, value: string): Promise<void> {
 
     return Promise.resolve();
 }
-
-function validateRepositoryPath(_: RuleObject, value: string): Promise<void> {
-    if (value && !patterns.validatePath.pattern.test(value)) {
-        return Promise.reject(new Error('Repository path is not a valid path'));
-    }
-
-    return Promise.resolve();
-}
-
-function validateRepository(_: RuleObject, value: string): Promise<[void, void]> | Promise<void> {
-    if (value) {
-        const [url, path] = value.split(/\s+/);
-        return Promise.all([validateURL(_, url), validateRepositoryPath(_, path)]);
-    }
-
-    return Promise.resolve();
-}
-
-const isInteger = ({ min, max }: { min?: number; max?: number }) => (
-    _: RuleObject,
-    value?: number | string,
-): Promise<void> => {
-    if (typeof value === 'undefined' || value === '') {
-        return Promise.resolve();
-    }
-
-    const intValue = +value;
-    if (Number.isNaN(intValue) || !Number.isInteger(intValue)) {
-        return Promise.reject(new Error('Value must be a positive integer'));
-    }
-
-    if (typeof min !== 'undefined' && intValue < min) {
-        return Promise.reject(new Error(`Value must be more than ${min}`));
-    }
-
-    if (typeof max !== 'undefined' && intValue > max) {
-        return Promise.reject(new Error(`Value must be less than ${max}`));
-    }
-
-    return Promise.resolve();
-};
 
 const validateOverlapSize: RuleRender = ({ getFieldValue }): RuleObject => ({
     validator(_: RuleObject, value?: string | number): Promise<void> {
@@ -131,23 +196,68 @@ class AdvancedConfigurationForm extends React.PureComponent<Props> {
         this.formRef = React.createRef<FormInstance>();
     }
 
-    public submit(): Promise<void> {
-        const { onSubmit } = this.props;
-        if (this.formRef.current) {
-            return this.formRef.current.validateFields().then(
-                (values: Store): Promise<void> => {
-                    const frameFilter = values.frameStep ? `step=${values.frameStep}` : undefined;
-                    const entries = Object.entries(values).filter(
-                        (entry: [string, unknown]): boolean => entry[0] !== frameFilter,
-                    );
+    private hasSection(section: AdvancedConfigurationSection): boolean {
+        const { visibleSections = CV_ADVANCED_CONFIGURATION_SECTIONS } = this.props;
+        return visibleSections.includes(section);
+    }
 
-                    onSubmit({
-                        ...((Object.fromEntries(entries) as any) as AdvancedConfiguration),
-                        frameFilter,
+    private getValuesWithoutFrameStep(values: Store): AdvancedConfiguration {
+        const entries = Object.entries(values).filter(
+            (entry: [string, unknown]): boolean => entry[0] !== 'frameStep',
+        );
+
+        return Object.fromEntries(entries) as AdvancedConfiguration;
+    }
+
+    private getFrameFilter(values: Store): Pick<AdvancedConfiguration, 'frameFilter'> {
+        if (!this.hasSection(AdvancedConfigurationSection.FRAME_RANGE)) {
+            return {};
+        }
+
+        return {
+            frameFilter: values.frameStep ? `step=${values.frameStep}` : undefined,
+        };
+    }
+
+    public submit(): Promise<void> {
+        const { onSubmit, projectId } = this.props;
+
+        if (this.formRef.current) {
+            if (projectId) {
+                return Promise.all([
+                    core.projects.get({ id: projectId }),
+                    this.formRef.current.validateFields(),
+                ]).then(([getProjectResponse, values]) => {
+                    const [project] = getProjectResponse;
+                    const sourceStorage = values.useProjectSourceStorage ?
+                        project.sourceStorage : values.sourceStorage;
+                    const targetStorage = values.useProjectTargetStorage ?
+                        project.targetStorage : values.targetStorage;
+
+                    return onSubmit({
+                        ...this.getValuesWithoutFrameStep(values),
+                        ...this.getFrameFilter(values),
+                        sourceStorage: new Storage(sourceStorage ?? { location: StorageLocation.LOCAL }),
+                        targetStorage: new Storage(targetStorage ?? { location: StorageLocation.LOCAL }),
                     });
-                    return Promise.resolve();
-                },
-            );
+                });
+            }
+
+            return this.formRef.current.validateFields()
+                .then(
+                    (values: Store): Promise<void> => (
+                        onSubmit({
+                            ...this.getValuesWithoutFrameStep(values),
+                            ...this.getFrameFilter(values),
+                            sourceStorage: new Storage(
+                                values.sourceStorage ?? { location: StorageLocation.LOCAL },
+                            ),
+                            targetStorage: new Storage(
+                                values.targetStorage ?? { location: StorageLocation.LOCAL },
+                            ),
+                        })
+                    ),
+                );
         }
 
         return Promise.reject(new Error('Form ref is empty'));
@@ -159,8 +269,7 @@ class AdvancedConfigurationForm extends React.PureComponent<Props> {
         }
     }
 
-    /* eslint-disable class-methods-use-this */
-    private renderCopyDataChechbox(): JSX.Element {
+    private renderCopyDataCheckbox(): JSX.Element {
         return (
             <Form.Item
                 help='If you have a low data transfer rate over the network you can copy data into CVAT to speed up work'
@@ -170,6 +279,35 @@ class AdvancedConfigurationForm extends React.PureComponent<Props> {
                 <Checkbox>
                     <Text className='cvat-text-color'>Copy data into CVAT</Text>
                 </Checkbox>
+            </Form.Item>
+        );
+    }
+
+    private renderSortingMethodRadio(): JSX.Element {
+        const { onChangeSortingMethod } = this.props;
+
+        return (
+            <Form.Item
+                label='Sorting method'
+                name='sortingMethod'
+                rules={[
+                    {
+                        required: true,
+                        message: 'The field is required.',
+                    },
+                ]}
+                help='Specify how to sort images. It is not relevant for videos.'
+            >
+                <Radio.Group buttonStyle='solid' onChange={(e) => onChangeSortingMethod(e.target.value)}>
+                    <Radio.Button value={SortingMethod.LEXICOGRAPHICAL} key={SortingMethod.LEXICOGRAPHICAL}>
+                        Lexicographical
+                    </Radio.Button>
+                    <Radio.Button value={SortingMethod.NATURAL} key={SortingMethod.NATURAL}>Natural</Radio.Button>
+                    <Radio.Button value={SortingMethod.PREDEFINED} key={SortingMethod.PREDEFINED}>
+                        Predefined
+                    </Radio.Button>
+                    <Radio.Button value={SortingMethod.RANDOM} key={SortingMethod.RANDOM}>Random</Radio.Button>
+                </Radio.Group>
             </Form.Item>
         );
     }
@@ -248,47 +386,6 @@ class AdvancedConfigurationForm extends React.PureComponent<Props> {
         );
     }
 
-    private renderGitLFSBox(): JSX.Element {
-        return (
-            <Form.Item
-                help='If annotation files are large, you can use git LFS feature'
-                name='lfs'
-                valuePropName='checked'
-            >
-                <Checkbox>
-                    <Text className='cvat-text-color'>Use LFS (Large File Support):</Text>
-                </Checkbox>
-            </Form.Item>
-        );
-    }
-
-    private renderGitRepositoryURL(): JSX.Element {
-        return (
-            <Form.Item
-                hasFeedback
-                name='repository'
-                label='Dataset repository URL'
-                extra='Attach a repository to store annotations there'
-                rules={[{ validator: validateRepository }]}
-            >
-                <Input size='large' placeholder='e.g. https//github.com/user/repos [annotation/<anno_file_name>.zip]' />
-            </Form.Item>
-        );
-    }
-
-    private renderGit(): JSX.Element {
-        return (
-            <>
-                <Row>
-                    <Col span={24}>{this.renderGitRepositoryURL()}</Col>
-                </Row>
-                <Row>
-                    <Col span={24}>{this.renderGitLFSBox()}</Col>
-                </Row>
-            </>
-        );
-    }
-
     private renderBugTracker(): JSX.Element {
         return (
             <Form.Item
@@ -305,25 +402,37 @@ class AdvancedConfigurationForm extends React.PureComponent<Props> {
 
     private renderUzeZipChunks(): JSX.Element {
         return (
-            <Form.Item
-                help='Force to use zip chunks as compressed data. Actual for videos only.'
-                name='useZipChunks'
-                valuePropName='checked'
-            >
-                <Checkbox>
-                    <Text className='cvat-text-color'>Use zip chunks</Text>
-                </Checkbox>
-            </Form.Item>
+            <Space>
+                <Form.Item
+                    name='useZipChunks'
+                    valuePropName='checked'
+                    className='cvat-settings-switch'
+                >
+                    <Switch />
+                </Form.Item>
+                <Text className='cvat-text-color'>Prefer zip chunks</Text>
+                <Tooltip title='ZIP chunks have better quality, but they require more disk space and time to download. Relevant for video only'>
+                    <QuestionCircleOutlined style={{ opacity: 0.5 }} />
+                </Tooltip>
+            </Space>
         );
     }
 
     private renderCreateTaskMethod(): JSX.Element {
         return (
-            <Form.Item help='Using cache to store data.' name='useCache' valuePropName='checked'>
-                <Checkbox>
-                    <Text className='cvat-text-color'>Use cache</Text>
-                </Checkbox>
-            </Form.Item>
+            <Space>
+                <Form.Item
+                    name='useCache'
+                    valuePropName='checked'
+                    className='cvat-settings-switch'
+                >
+                    <Switch defaultChecked />
+                </Form.Item>
+                <Text className='cvat-text-color'>Use cache</Text>
+                <Tooltip title='Using cache to store data.'>
+                    <QuestionCircleOutlined style={{ opacity: 0.5 }} />
+                </Tooltip>
+            </Space>
         );
     }
 
@@ -354,50 +463,144 @@ class AdvancedConfigurationForm extends React.PureComponent<Props> {
         );
     }
 
-    public render(): JSX.Element {
-        const { installedGit, activeFileManagerTab } = this.props;
+    private renderInitialReplicas(): JSX.Element {
         return (
-            <Form initialValues={initialValues} ref={this.formRef} layout='vertical'>
-                {activeFileManagerTab === 'share' ? (
+            <Form.Item
+                label='Initial replicas'
+                name='initialReplicas'
+                rules={[{ validator: isInteger({ min: 0 }) }]}
+            >
+                <Input
+                    size='large'
+                    type='number'
+                    min={0}
+                    step={1}
+                />
+            </Form.Item>
+        );
+    }
+
+    private renderSourceStorage(): JSX.Element {
+        const {
+            projectId,
+            useProjectSourceStorage,
+            sourceStorageLocation,
+            onChangeUseProjectSourceStorage,
+            onChangeSourceStorageLocation,
+        } = this.props;
+        return (
+            <SourceStorageField
+                instanceId={projectId}
+                locationValue={sourceStorageLocation}
+                switchDescription='Use project source storage'
+                storageDescription='Specify source storage for import resources like annotation, backups'
+                useDefaultStorage={useProjectSourceStorage}
+                onChangeUseDefaultStorage={onChangeUseProjectSourceStorage}
+                onChangeLocationValue={onChangeSourceStorageLocation}
+            />
+        );
+    }
+
+    private renderTargetStorage(): JSX.Element {
+        const {
+            projectId,
+            useProjectTargetStorage,
+            targetStorageLocation,
+            onChangeUseProjectTargetStorage,
+            onChangeTargetStorageLocation,
+        } = this.props;
+        return (
+            <TargetStorageField
+                instanceId={projectId}
+                locationValue={targetStorageLocation}
+                switchDescription='Use project target storage'
+                storageDescription='Specify target storage for export resources like annotation, backups                '
+                useDefaultStorage={useProjectTargetStorage}
+                onChangeUseDefaultStorage={onChangeUseProjectTargetStorage}
+                onChangeLocationValue={onChangeTargetStorageLocation}
+            />
+        );
+    }
+
+    public render(): JSX.Element {
+        const { activeFileManagerTab, visibleSections = CV_ADVANCED_CONFIGURATION_SECTIONS } = this.props;
+        const hasSorting = this.hasSection(AdvancedConfigurationSection.SORTING);
+        const hasCopyData = this.hasSection(AdvancedConfigurationSection.COPY_DATA);
+        const hasChunking = this.hasSection(AdvancedConfigurationSection.CHUNKING);
+        const hasImageQuality = this.hasSection(AdvancedConfigurationSection.IMAGE_QUALITY);
+        const hasFrameRange = this.hasSection(AdvancedConfigurationSection.FRAME_RANGE);
+        const hasChunkSize = this.hasSection(AdvancedConfigurationSection.CHUNK_SIZE);
+        const hasReplicas = this.hasSection(AdvancedConfigurationSection.REPLICAS);
+        const hasBugTracker = this.hasSection(AdvancedConfigurationSection.BUG_TRACKER);
+        const hasStorage = this.hasSection(AdvancedConfigurationSection.STORAGE);
+
+        return (
+            <Form initialValues={getAdvancedConfigurationInitialValues(visibleSections)} ref={this.formRef} layout='vertical'>
+                {hasSorting && (
                     <Row>
-                        <Col>{this.renderCopyDataChechbox()}</Col>
+                        <Col>{this.renderSortingMethodRadio()}</Col>
                     </Row>
-                ) : null}
-                <Row>
-                    <Col>{this.renderUzeZipChunks()}</Col>
-                </Row>
-                <Row>
-                    <Col>{this.renderCreateTaskMethod()}</Col>
-                </Row>
-                <Row justify='start'>
-                    <Col span={7}>{this.renderImageQuality()}</Col>
-                    <Col span={7} offset={1}>
-                        {this.renderOverlap()}
-                    </Col>
-                    <Col span={7} offset={1}>
-                        {this.renderSegmentSize()}
-                    </Col>
-                </Row>
-
-                <Row justify='start'>
-                    <Col span={7}>{this.renderStartFrame()}</Col>
-                    <Col span={7} offset={1}>
-                        {this.renderStopFrame()}
-                    </Col>
-                    <Col span={7} offset={1}>
-                        {this.renderFrameStep()}
-                    </Col>
-                </Row>
-
-                <Row justify='start'>
-                    <Col span={7}>{this.renderChunkSize()}</Col>
-                </Row>
-
-                {installedGit ? this.renderGit() : null}
-
-                <Row>
-                    <Col span={24}>{this.renderBugTracker()}</Col>
-                </Row>
+                )}
+                {hasCopyData && activeFileManagerTab === 'share' && (
+                    <Row>
+                        <Col>{this.renderCopyDataCheckbox()}</Col>
+                    </Row>
+                )}
+                {hasChunking && (
+                    <Row>
+                        <Col span={12}>{this.renderUzeZipChunks()}</Col>
+                        <Col span={12}>{this.renderCreateTaskMethod()}</Col>
+                    </Row>
+                )}
+                {hasImageQuality && (
+                    <Row justify='start'>
+                        <Col span={7}>{this.renderImageQuality()}</Col>
+                        <Col span={7} offset={1}>
+                            {this.renderOverlap()}
+                        </Col>
+                        <Col span={7} offset={1}>
+                            {this.renderSegmentSize()}
+                        </Col>
+                    </Row>
+                )}
+                {hasFrameRange && (
+                    <Row justify='start'>
+                        <Col span={7}>{this.renderStartFrame()}</Col>
+                        <Col span={7} offset={1}>
+                            {this.renderStopFrame()}
+                        </Col>
+                        <Col span={7} offset={1}>
+                            {this.renderFrameStep()}
+                        </Col>
+                    </Row>
+                )}
+                {hasChunkSize && (
+                    <Row justify='start'>
+                        <Col span={7}>{this.renderChunkSize()}</Col>
+                    </Row>
+                )}
+                {hasReplicas && (
+                    <Row justify='start'>
+                        <Col span={7}>
+                            {this.renderInitialReplicas()}
+                        </Col>
+                    </Row>
+                )}
+                {hasBugTracker && (
+                    <Row>
+                        <Col span={24}>{this.renderBugTracker()}</Col>
+                    </Row>
+                )}
+                {hasStorage && (
+                    <Row justify='space-between'>
+                        <Col span={11}>
+                            {this.renderSourceStorage()}
+                        </Col>
+                        <Col span={11} offset={1}>
+                            {this.renderTargetStorage()}
+                        </Col>
+                    </Row>
+                )}
             </Form>
         );
     }

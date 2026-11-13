@@ -1,4 +1,4 @@
-// Copyright (C) 2020-2021 Intel Corporation
+// Copyright (C) 2020-2022 Intel Corporation
 //
 // SPDX-License-Identifier: MIT
 
@@ -8,35 +8,56 @@ import { connect } from 'react-redux';
 import {
     switchAutoSave,
     changeAutoSaveInterval,
-    changeAAMZoomMargin,
+    changeFocusedObjectPadding,
     switchShowingInterpolatedTracks,
     switchShowingObjectsTextAlways,
-    switchAutomaticBordering,
     switchIntelligentPolygonCrop,
+    changeDefaultApproxPolyAccuracy,
+    switchTextFontSize,
+    switchControlPointsSize,
+    switchTextPosition,
+    switchTextContent,
+    switchShowingConflictRequirements,
+    switchShowingTagsOnFrame,
+    switchAdaptiveZoom,
 } from 'actions/settings-actions';
 
-import { CombinedState } from 'reducers/interfaces';
+import { CombinedState } from 'reducers';
 
 import WorkspaceSettingsComponent from 'components/header/settings-modal/workspace-settings';
 
 interface StateToProps {
     autoSave: boolean;
     autoSaveInterval: number;
-    aamZoomMargin: number;
+    focusedObjectPadding: number;
     showAllInterpolationTracks: boolean;
     showObjectsTextAlways: boolean;
-    automaticBordering: boolean;
+    defaultApproxPolyAccuracy: number;
+    adaptiveZoom: boolean;
     intelligentPolygonCrop: boolean;
+    textFontSize: number;
+    controlPointsSize: number;
+    textPosition: 'auto' | 'center';
+    textContent: string;
+    showConflictRequirements: boolean;
+    showTagsOnFrame: boolean;
 }
 
 interface DispatchToProps {
     onSwitchAutoSave(enabled: boolean): void;
     onChangeAutoSaveInterval(interval: number): void;
-    onChangeAAMZoomMargin(margin: number): void;
+    onChangeFocusedObjectPadding(margin: number): void;
     onSwitchShowingInterpolatedTracks(enabled: boolean): void;
     onSwitchShowingObjectsTextAlways(enabled: boolean): void;
-    onSwitchAutomaticBordering(enabled: boolean): void;
+    onSwitchAdaptiveZoom(enabled: boolean): void;
     onSwitchIntelligentPolygonCrop(enabled: boolean): void;
+    onChangeDefaultApproxPolyAccuracy(approxPolyAccuracy: number): void;
+    onChangeTextFontSize(fontSize: number): void;
+    onChangeControlPointsSize(pointsSize: number): void;
+    onChangeTextPosition(position: 'auto' | 'center'): void;
+    onChangeTextContent(textContent: string[]): void;
+    onSwitchShowingConflictRequirements(enabled: boolean): void;
+    onSwitchShowingTagsOnFrame(enabled: boolean): void;
 }
 
 function mapStateToProps(state: CombinedState): StateToProps {
@@ -44,49 +65,54 @@ function mapStateToProps(state: CombinedState): StateToProps {
     const {
         autoSave,
         autoSaveInterval,
-        aamZoomMargin,
+        focusedObjectPadding,
         showAllInterpolationTracks,
         showObjectsTextAlways,
-        automaticBordering,
+        adaptiveZoom,
         intelligentPolygonCrop,
+        defaultApproxPolyAccuracy,
+        textFontSize,
+        controlPointsSize,
+        textPosition,
+        textContent,
+        showConflictRequirements,
+        showTagsOnFrame,
     } = workspace;
 
     return {
         autoSave,
         autoSaveInterval,
-        aamZoomMargin,
+        focusedObjectPadding,
         showAllInterpolationTracks,
         showObjectsTextAlways,
-        automaticBordering,
+        adaptiveZoom,
         intelligentPolygonCrop,
+        defaultApproxPolyAccuracy,
+        textFontSize,
+        controlPointsSize,
+        textPosition,
+        textContent,
+        showConflictRequirements,
+        showTagsOnFrame,
     };
 }
 
-function mapDispatchToProps(dispatch: any): DispatchToProps {
-    return {
-        onSwitchAutoSave(enabled: boolean): void {
-            dispatch(switchAutoSave(enabled));
-        },
-        onChangeAutoSaveInterval(interval: number): void {
-            dispatch(changeAutoSaveInterval(interval));
-        },
-        onChangeAAMZoomMargin(margin: number): void {
-            dispatch(changeAAMZoomMargin(margin));
-        },
-        onSwitchShowingInterpolatedTracks(enabled: boolean): void {
-            dispatch(switchShowingInterpolatedTracks(enabled));
-        },
-        onSwitchShowingObjectsTextAlways(enabled: boolean): void {
-            dispatch(switchShowingObjectsTextAlways(enabled));
-        },
-        onSwitchAutomaticBordering(enabled: boolean): void {
-            dispatch(switchAutomaticBordering(enabled));
-        },
-        onSwitchIntelligentPolygonCrop(enabled: boolean): void {
-            dispatch(switchIntelligentPolygonCrop(enabled));
-        },
-    };
-}
+const mapDispatchToProps: DispatchToProps = {
+    onSwitchAutoSave: switchAutoSave,
+    onChangeAutoSaveInterval: changeAutoSaveInterval,
+    onChangeFocusedObjectPadding: changeFocusedObjectPadding,
+    onSwitchShowingInterpolatedTracks: switchShowingInterpolatedTracks,
+    onSwitchShowingObjectsTextAlways: switchShowingObjectsTextAlways,
+    onSwitchAdaptiveZoom: switchAdaptiveZoom,
+    onSwitchIntelligentPolygonCrop: switchIntelligentPolygonCrop,
+    onChangeDefaultApproxPolyAccuracy: changeDefaultApproxPolyAccuracy,
+    onChangeTextFontSize: switchTextFontSize,
+    onChangeControlPointsSize: switchControlPointsSize,
+    onChangeTextPosition: switchTextPosition,
+    onChangeTextContent: switchTextContent,
+    onSwitchShowingConflictRequirements: switchShowingConflictRequirements,
+    onSwitchShowingTagsOnFrame: switchShowingTagsOnFrame,
+};
 
 function WorkspaceSettingsContainer(props: StateToProps & DispatchToProps): JSX.Element {
     return <WorkspaceSettingsComponent {...props} />;

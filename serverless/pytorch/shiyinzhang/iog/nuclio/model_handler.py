@@ -1,4 +1,5 @@
-# Copyright (C) 2020 Intel Corporation
+# Copyright (C) 2020-2022 Intel Corporation
+# Copyright (C) CVAT.ai Corporation
 #
 # SPDX-License-Identifier: MIT
 
@@ -9,26 +10,21 @@ import torch
 from networks.mainnetwork import Network
 from dataloaders import helpers
 
-def convert_mask_to_polygon(mask):
-    mask = np.array(mask, dtype=np.uint8)
-    cv2.normalize(mask, mask, 0, 255, cv2.NORM_MINMAX)
-    contours = None
-    if int(cv2.__version__.split('.')[0]) > 3:
-        contours = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_TC89_KCOS)[0]
-    else:
-        contours = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_TC89_KCOS)[1]
 
-    contours = max(contours, key=lambda arr: arr.size)
-    if contours.shape.count(1):
-        contours = np.squeeze(contours)
-    if contours.size < 3 * 2:
-        raise Exception('Less then three point have been detected. Can not build a polygon.')
+def mask_to_rle(mask):
+    [height, width] = mask.shape
+    pixels = (np.asarray(mask).reshape(-1) != 0).astype(np.uint8)
+    if pixels.size == 0:
+        return []
 
-    polygon = []
-    for point in contours:
-        polygon.append([int(point[0]), int(point[1])])
+    changes = np.flatnonzero(pixels[1:] != pixels[:-1]) + 1
+    rle = np.diff(np.concatenate(([0], changes, [pixels.size]))).tolist()
+    if pixels[0] == 1:
+        rle.insert(0, 0)
 
-    return polygon
+    rle.extend([0, 0, width - 1, height - 1])
+    return rle
+
 
 class ModelHandler:
     def __init__(self):
@@ -37,10 +33,16 @@ class ModelHandler:
         self.device = torch.device("cpu")
 
         # Number of input channels (RGB + heatmap of IOG points)
-        self.net = Network(nInputChannels=5, num_classes=1, backbone='resnet101',
-            output_stride=16, sync_bn=None, freeze_bn=False)
+        self.net = Network(
+            nInputChannels=5,
+            num_classes=1,
+            backbone="resnet101",
+            output_stride=16,
+            sync_bn=None,
+            freeze_bn=False,
+        )
 
-        pretrain_dict = torch.load(model_path)
+        pretrain_dict = torch.load(model_path, weights_only=True)
         self.net.load_state_dict(pretrain_dict)
         self.net.to(self.device)
         self.net.eval()
@@ -50,14 +52,14 @@ class ModelHandler:
             # extract a crop with padding from the image
             crop_padding = 30
             crop_bbox = [
-                max(bbox[0] - crop_padding, 0),
-                max(bbox[1] - crop_padding, 0),
-                min(bbox[2] + crop_padding, image.width - 1),
-                min(bbox[3] + crop_padding, image.height - 1)
+                max(bbox[0][0] - crop_padding, 0),
+                max(bbox[0][1] - crop_padding, 0),
+                min(bbox[1][0] + crop_padding, image.width - 1),
+                min(bbox[1][1] + crop_padding, image.height - 1),
             ]
             crop_shape = (
-                int(crop_bbox[2] - crop_bbox[0] + 1), # width
-                int(crop_bbox[3] - crop_bbox[1] + 1), # height
+                int(crop_bbox[2] - crop_bbox[0] + 1),  # width
+                int(crop_bbox[3] - crop_bbox[1] + 1),  # height
             )
 
             # try to use crop_from_bbox(img, bbox, zero_pad) here
@@ -69,9 +71,12 @@ class ModelHandler:
 
             def translate_points_to_crop(points):
                 points = [
-                    ((p[0] - crop_bbox[0]) * crop_scale[0], # x
-                     (p[1] - crop_bbox[1]) * crop_scale[1]) # y
-                    for p in points]
+                    (
+                        (p[0] - crop_bbox[0]) * crop_scale[0],  # x
+                        (p[1] - crop_bbox[1]) * crop_scale[1],  # y
+                    )
+                    for p in points
+                ]
 
                 return points
 
@@ -108,16 +113,15 @@ class ModelHandler:
             pred = np.squeeze(pred)
 
             # Convert a mask to a polygon
-            polygon = convert_mask_to_polygon(pred)
-            def translate_points_to_image(points):
-                points = [
-                    (p[0] / crop_scale[0] + crop_bbox[0], # x
-                     p[1] / crop_scale[1] + crop_bbox[1]) # y
-                    for p in points]
+            pred = np.array(pred, dtype=np.uint8)
+            pred = cv2.resize(
+                pred, dsize=(crop_shape[0], crop_shape[1]), interpolation=cv2.INTER_CUBIC
+            )
+            cv2.normalize(pred, pred, 0, 255, cv2.NORM_MINMAX)
 
-                return points
+            mask = np.zeros((image.height, image.width), dtype=np.uint8)
+            x = int(crop_bbox[0])
+            y = int(crop_bbox[1])
+            mask[y : y + crop_shape[1], x : x + crop_shape[0]] = pred
 
-            polygon = translate_points_to_image(polygon)
-
-            return polygon
-
+            return mask_to_rle(mask)

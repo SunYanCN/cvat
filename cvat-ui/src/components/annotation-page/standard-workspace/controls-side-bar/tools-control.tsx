@@ -1,10 +1,15 @@
-// Copyright (C) 2020-2021 Intel Corporation
+// Copyright (C) 2020-2022 Intel Corporation
+// Copyright (C) CVAT.ai Corporation
 //
 // SPDX-License-Identifier: MIT
 
-import React, { MutableRefObject } from 'react';
+import React, { ReactPortal } from 'react';
+import ReactDOM from 'react-dom';
 import { connect } from 'react-redux';
-import Icon, { LoadingOutlined } from '@ant-design/icons';
+import Icon, {
+    LoadingOutlined,
+    QuestionCircleOutlined,
+} from '@ant-design/icons';
 import Popover from 'antd/lib/popover';
 import Select from 'antd/lib/select';
 import Button from 'antd/lib/button';
@@ -13,146 +18,486 @@ import Text from 'antd/lib/typography/Text';
 import Tabs from 'antd/lib/tabs';
 import { Row, Col } from 'antd/lib/grid';
 import notification from 'antd/lib/notification';
-import Progress from 'antd/lib/progress';
-import InputNumber from 'antd/lib/input-number';
+import message from 'antd/lib/message';
+import Switch from 'antd/lib/switch';
+import lodash from 'lodash';
 
 import { AIToolsIcon } from 'icons';
-import { Canvas, convertShapesForInteractor } from 'cvat-canvas-wrapper';
-import range from 'utils/range';
-import getCore from 'cvat-core-wrapper';
+import { Canvas, convertShapesForInteractor, InteractionResult } from 'cvat-canvas-wrapper';
 import {
-    CombinedState, ActiveControl, Model, ObjectType, ShapeType,
-} from 'reducers/interfaces';
+    getCore, Label, MLModel, ObjectState, ObjectType, ShapeType, Job,
+    MinimalShape, InteractorResults, TrackerResults, DimensionType,
+} from 'cvat-core-wrapper';
+import openCVWrapper from 'utils/opencv-wrapper/opencv-wrapper';
+import {
+    CombinedState, ActiveControl, PluginComponent,
+} from 'reducers';
 import {
     interactWithCanvas,
+    updateActiveControl,
+    switchNavigationBlocked as switchNavigationBlockedAction,
     fetchAnnotationsAsync,
     updateAnnotationsAsync,
     createAnnotationsAsync,
 } from 'actions/annotation-actions';
-import DetectorRunner from 'components/model-runner-modal/detector-runner';
+import DetectorRunner, {
+    AnnotateTaskRequestBody,
+    type RegionOfInterest,
+} from 'components/model-runner-modal/detector-runner';
+import RegionOfInterestInputComponent from 'components/model-runner-modal/region-of-interest-input';
+import ModelSelectorDropdownContent from 'components/model-runner-modal/model-selector-dropdown-content';
 import LabelSelector from 'components/label-selector/label-selector';
+import CVATMarkdown from 'components/common/cvat-markdown';
+import { TrackerControlsUpdateContext } from 'components/annotation-page/standard-workspace/tracker-controls';
+
+import ApproximationAccuracy from 'components/annotation-page/standard-workspace/controls-side-bar/approximation-accuracy';
+import ConfidenceThreshold from 'components/annotation-page/standard-workspace/controls-side-bar/confidence-threshold';
 import withVisibilityHandling from './handle-popover-visibility';
+import ToolsTooltips from './interactor-tooltips';
+
+const rectangleHint = {
+    markdown: [
+        '### Rectangle prompts',
+        '',
+        'Draw a box around the area you want to select.',
+        '',
+        '**Actions**',
+        '- Click opposite corners to draw a box.',
+        '- Hold the `Mouse wheel` and drag to pan.',
+    ].join('\n'),
+    topic: 'rectangle-prompts-v1',
+};
+
+const getPointsHint = (withNegativePoints: boolean): typeof rectangleHint => ({
+    markdown: [
+        '### Point prompts',
+        '',
+        'Use points to guide the selection.',
+        '',
+        '**Actions**',
+        '- `Left click` to add a positive point.',
+        ...(withNegativePoints ? ['- `Right click` to add a negative point.'] : []),
+        '- Hold the `Mouse wheel` and drag to pan.',
+    ].join('\n'),
+    topic: 'point-prompts-v1',
+});
 
 interface StateToProps {
     canvasInstance: Canvas;
-    labels: any[];
-    states: any[];
-    activeLabelID: number;
-    jobInstance: any;
+    labels: Label[];
+    states: ObjectState[];
+    activeLabelID: number | null;
+    jobInstance: Job;
     isActivated: boolean;
     frame: number;
-    interactors: Model[];
-    detectors: Model[];
-    trackers: Model[];
-    curZOrder: number;
-    aiToolsRef: MutableRefObject<any>;
+    interactors: MLModel[];
+    detectors: MLModel[];
+    trackers: MLModel[];
+    currentZOrder: number;
+    defaultApproxPolyAccuracy: number;
+    frameData: { width: number; height: number; deleted?: boolean };
+    interactorExtras: PluginComponent[];
 }
 
 interface DispatchToProps {
-    onInteractionStart(activeInteractor: Model, activeLabelID: number): void;
-    updateAnnotations(statesToUpdate: any[]): void;
-    createAnnotations(sessionInstance: any, frame: number, statesToCreate: any[]): void;
-    fetchAnnotations(): void;
+    updateAnnotations: (states: ObjectState[]) => Promise<void>;
+    createAnnotations: (states: ObjectState[]) => void;
+    fetchAnnotations: () => void;
+    onInteractionStart: typeof interactWithCanvas;
+    updateActiveControl: typeof updateActiveControl;
+    switchNavigationBlocked: typeof switchNavigationBlockedAction;
 }
 
 const core = getCore();
 const CustomPopover = withVisibilityHandling(Popover, 'tools-control');
+const startWithBoxStorageItem = 'startInteractingWithBox';
 
 function mapStateToProps(state: CombinedState): StateToProps {
-    const { annotation } = state;
-    const { number: frame } = annotation.player.frame;
-    const { instance: jobInstance } = annotation.job;
-    const { instance: canvasInstance, activeControl } = annotation.canvas;
-    const { models } = state;
-    const { interactors, detectors, trackers } = models;
+    const {
+        annotation: {
+            job: { instance: jobInstance, labels },
+            canvas: { instance: canvasInstance, activeControl },
+            player: {
+                frame: { number: frame, data: frameData },
+            },
+            annotations: {
+                zLayer: { cur: currentZOrder },
+                states,
+            },
+            drawing: { activeLabelID },
+        },
+        models: {
+            interactors, detectors, trackers,
+        },
+        settings: {
+            workspace: { defaultApproxPolyAccuracy },
+        },
+        plugins: {
+            components: {
+                aiTools: {
+                    interactors: {
+                        extras: interactorExtras,
+                    },
+                },
+            },
+        },
+    } = state;
 
     return {
         interactors,
         detectors,
         trackers,
         isActivated: activeControl === ActiveControl.AI_TOOLS,
-        activeLabelID: annotation.drawing.activeLabelID,
-        labels: annotation.job.labels,
-        states: annotation.annotations.states,
+        activeLabelID,
+        labels,
+        states,
         canvasInstance: canvasInstance as Canvas,
-        jobInstance,
+        jobInstance: jobInstance as Job,
         frame,
-        curZOrder: annotation.annotations.zLayer.cur,
-        aiToolsRef: annotation.aiToolsRef,
+        currentZOrder,
+        defaultApproxPolyAccuracy,
+        frameData,
+        interactorExtras,
     };
 }
 
 const mapDispatchToProps = {
+    updateActiveControl,
     onInteractionStart: interactWithCanvas,
     updateAnnotations: updateAnnotationsAsync,
-    fetchAnnotations: fetchAnnotationsAsync,
     createAnnotations: createAnnotationsAsync,
+    fetchAnnotations: fetchAnnotationsAsync,
+    switchNavigationBlocked: switchNavigationBlockedAction,
 };
 
 type Props = StateToProps & DispatchToProps;
-interface State {
-    activeInteractor: Model | null;
-    activeLabelID: number;
-    interactiveStateID: number | null;
-    activeTracker: Model | null;
-    trackingProgress: number | null;
-    trackingFrames: number;
-    fetching: boolean;
-    mode: 'detection' | 'interaction' | 'tracking';
+interface TrackedShape {
+    clientID: number;
+    serverlessState: any;
+    shapePoints: number[];
+    trackerModel: MLModel;
 }
 
-export class ToolsControlComponent extends React.PureComponent<Props, State> {
-    private interactionIsAborted: boolean;
+interface State {
+    activeInteractor: MLModel | null;
+    activeLabelID: number | null;
+    activeTracker: MLModel | null;
+    startInteractingWithBox: boolean;
+    convertMasksToPolygons: boolean;
+    trackedShapes: TrackedShape[];
+    fetching: boolean;
+    interactorResponseReceived: boolean;
+    showConfidenceControl: boolean;
+    approxPolyAccuracy: number;
+    thresholdValue: number;
+    activeTab: 'detectors' | 'interactors' | 'trackers';
+    mode: 'detection' | 'interaction' | 'tracking';
+    allowROI: boolean;
+    interactorRegionOfInterest: RegionOfInterest;
+    detectorRegionOfInterest: RegionOfInterest;
+    toolsPopoverVisible: boolean;
+}
 
-    private interactionIsDone: boolean;
+type DetectorResults = Extract<
+    Awaited<ReturnType<typeof core.lambda.call>>,
+    { tags: unknown[]; shapes: unknown[]; tracks: unknown[] }
+>;
+
+function trackedRectangleMapper(shape: MinimalShape): MinimalShape {
+    return {
+        type: ShapeType.RECTANGLE,
+        points: shape.points.reduce(
+            (acc: number[], value: number, index: number): number[] => {
+                if (index % 2) {
+                // y
+                    acc[1] = Math.min(acc[1], value);
+                    acc[3] = Math.max(acc[3], value);
+                } else {
+                // x
+                    acc[0] = Math.min(acc[0], value);
+                    acc[2] = Math.max(acc[2], value);
+                }
+                return acc;
+            },
+            [Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER, Number.MIN_SAFE_INTEGER, Number.MIN_SAFE_INTEGER],
+        ),
+    };
+}
+
+function registerPlugin(): (callback: null | (() => void)) => void {
+    let onTrigger: null | (() => void) = null;
+    const listener = {
+        name: 'Remove annotations listener',
+        description: 'Tracker needs to know when annotations is reset in the job',
+        cvat: {
+            classes: {
+                Job: {
+                    prototype: {
+                        annotations: {
+                            clear: {
+                                leave(self: any, result: any) {
+                                    if (typeof onTrigger === 'function') {
+                                        onTrigger();
+                                    }
+                                    return result;
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        },
+    };
+
+    core.plugins.register(listener);
+
+    return (callback: null | (() => void)) => {
+        onTrigger = callback;
+    };
+}
+
+const onRemoveAnnotations = registerPlugin();
+
+export class ToolsControlComponent extends React.PureComponent<Props, State> {
+    public static contextType = TrackerControlsUpdateContext;
+    private mounted = false;
+    private savingTrackingClientIDs = new Set<number>();
+    private get updateTrackerControls(): React.ContextType<typeof TrackerControlsUpdateContext> {
+        return this.context as React.ContextType<typeof TrackerControlsUpdateContext>;
+    }
+    private interaction: {
+        id: string | null;
+        isAborted: boolean;
+        latestResponse: {
+            rle: Int32Array;
+            points: [number, number][];
+            contours: [number, number][][];
+            approximatedPoints: [number, number][];
+            confidence: number;
+        }[];
+        latestRequest: null | {
+            interactor: MLModel;
+            data: {
+                frame: number;
+                neg_points: number[][];
+                pos_points: number[][];
+                obj_bbox: number[][];
+            };
+        } | null;
+        closeFetchingMessage: (() => void) | null;
+        noShapesMessage: (() => void) | null;
+    };
 
     public constructor(props: Props) {
         super(props);
+
+        const supportedTrackers = this.getSupportedTrackers();
+
         this.state = {
+            convertMasksToPolygons: false,
+            startInteractingWithBox: (localStorage.getItem(startWithBoxStorageItem) ?? 'true') === 'true',
             activeInteractor: props.interactors.length ? props.interactors[0] : null,
-            activeTracker: props.trackers.length ? props.trackers[0] : null,
-            activeLabelID: props.labels.length ? props.labels[0].id : null,
-            interactiveStateID: null,
-            trackingProgress: null,
-            trackingFrames: 10,
+            activeTracker: supportedTrackers.length ? supportedTrackers[0] : null,
+            activeLabelID: props.labels.length ? props.labels[0].id as number : null,
+            approxPolyAccuracy: props.defaultApproxPolyAccuracy,
+            thresholdValue: 0.5,
+            trackedShapes: [],
             fetching: false,
+            interactorResponseReceived: false,
+            showConfidenceControl: false,
             mode: 'interaction',
+            activeTab: 'interactors',
+            allowROI: props.jobInstance.dimension === DimensionType.DIMENSION_2D,
+            interactorRegionOfInterest: null,
+            detectorRegionOfInterest: null,
+            toolsPopoverVisible: false,
         };
 
-        this.interactionIsAborted = false;
-        this.interactionIsDone = false;
+        this.interaction = {
+            id: null,
+            isAborted: false,
+            latestResponse: [],
+            latestRequest: null,
+            closeFetchingMessage: null,
+            noShapesMessage: null,
+        };
     }
 
     public componentDidMount(): void {
-        const { canvasInstance, aiToolsRef } = this.props;
-        aiToolsRef.current = this;
+        this.mounted = true;
+        const { canvasInstance } = this.props;
+        onRemoveAnnotations(() => {
+            this.setState({ trackedShapes: [] });
+        });
+
+        this.publishTrackerControls();
+
         canvasInstance.html().addEventListener('canvas.interacted', this.interactionListener);
         canvasInstance.html().addEventListener('canvas.canceled', this.cancelListener);
     }
 
-    public componentDidUpdate(prevProps: Props): void {
-        const { isActivated } = this.props;
+    public componentDidUpdate(prevProps: Props, prevState: State): void {
+        const {
+            isActivated, defaultApproxPolyAccuracy, jobInstance,
+        } = this.props;
+        const {
+            approxPolyAccuracy, mode, activeTracker, thresholdValue, trackedShapes,
+        } = this.state;
+
+        if (prevState.activeTracker !== activeTracker || prevState.trackedShapes !== trackedShapes ||
+            prevProps.labels !== this.props.labels || prevProps.trackers !== this.props.trackers ||
+            prevProps.frameData.deleted !== this.props.frameData.deleted
+        ) {
+            this.publishTrackerControls();
+        }
+
+        if (prevProps.jobInstance.dimension !== jobInstance.dimension) {
+            this.setState({
+                allowROI: jobInstance.dimension === DimensionType.DIMENSION_2D,
+                interactorRegionOfInterest: null,
+                detectorRegionOfInterest: null,
+            });
+        }
+
         if (prevProps.isActivated && !isActivated) {
             window.removeEventListener('contextmenu', this.contextmenuDisabler);
+
+            // hide interaction messages if exists
+            for (const messageCallback of ['closeFetchingMessage', 'noShapesMessage'] as const) {
+                if (this.interaction[messageCallback]) {
+                    this.interaction[messageCallback]?.();
+                    this.interaction[messageCallback] = null;
+                }
+            }
         } else if (!prevProps.isActivated && isActivated) {
             // reset flags when start interaction/tracking
-            this.interactionIsDone = false;
-            this.interactionIsAborted = false;
+            this.interaction = {
+                id: null,
+                isAborted: false,
+                latestResponse: [],
+                latestRequest: null,
+                closeFetchingMessage: null,
+                noShapesMessage: null,
+            };
+
+            this.setState({
+                approxPolyAccuracy: defaultApproxPolyAccuracy,
+                interactorResponseReceived: false,
+                showConfidenceControl: false,
+            });
             window.addEventListener('contextmenu', this.contextmenuDisabler);
         }
+
+        if (prevState.thresholdValue !== thresholdValue) {
+            if (isActivated && mode === 'interaction') {
+                this.drawIntermediateShapesOnCanvas();
+            }
+        }
+
+        if (prevState.approxPolyAccuracy !== approxPolyAccuracy) {
+            if (isActivated && mode === 'interaction') {
+                this.interaction.latestResponse.forEach(({ points }, idx) => {
+                    const approximated = this.approximateResponsePoints(points);
+                    this.interaction.latestResponse[idx].approximatedPoints = approximated;
+                });
+
+                this.drawIntermediateShapesOnCanvas();
+            }
+        }
+
+        this.checkTrackedStates(prevProps);
     }
 
     public componentWillUnmount(): void {
-        const { canvasInstance, aiToolsRef } = this.props;
-        aiToolsRef.current = undefined;
+        this.mounted = false;
+        this.updateTrackerControls(null);
+        const { canvasInstance } = this.props;
+        onRemoveAnnotations(null);
         canvasInstance.html().removeEventListener('canvas.interacted', this.interactionListener);
         canvasInstance.html().removeEventListener('canvas.canceled', this.cancelListener);
     }
 
-    private getInteractiveState(): any | null {
-        const { states } = this.props;
-        const { interactiveStateID } = this.state;
-        return states.filter((_state: any): boolean => _state.clientID === interactiveStateID)[0] || null;
+    private getSupportedTrackers(): MLModel[] {
+        const { trackers } = this.props;
+        return trackers.filter((tracker: MLModel) => tracker.supportedShapeTypes!.includes(ShapeType.RECTANGLE));
+    }
+
+    private renderROIControls(): JSX.Element | null {
+        const { canvasInstance, frameData } = this.props;
+
+        return (
+            <RegionOfInterestInputComponent
+                frameWidth={frameData.width}
+                frameHeight={frameData.height}
+                canvasInstance={canvasInstance}
+                onSubmit={(interactorRegionOfInterest) => this.setState({ interactorRegionOfInterest })}
+            />
+        );
+    }
+
+    private renderRegionOfInterestOverlay(): ReactPortal | null {
+        const {
+            canvasInstance,
+            frameData: { width: frameWidth, height: frameHeight },
+            isActivated,
+        } = this.props;
+        const {
+            interactorRegionOfInterest, detectorRegionOfInterest, toolsPopoverVisible, mode, activeTab,
+        } = this.state;
+        const attachmentBoard = window.document.getElementById('cvat_canvas_attachment_board');
+        let regionOfInterest = null;
+        if ((activeTab === 'interactors' && toolsPopoverVisible) || (isActivated && mode === 'interaction')) {
+            regionOfInterest = interactorRegionOfInterest;
+        } else if (activeTab === 'detectors' && toolsPopoverVisible) {
+            regionOfInterest = detectorRegionOfInterest;
+        }
+
+        if (
+            !attachmentBoard ||
+            !Number.isInteger(frameWidth) ||
+            !Number.isInteger(frameHeight) ||
+            !regionOfInterest
+        ) {
+            return null;
+        }
+
+        const { offset } = canvasInstance.geometry;
+        const overlayWidth = frameWidth + offset * 2;
+        const overlayHeight = frameHeight + offset * 2;
+        const overlayROI = {
+            xtl: regionOfInterest[0] + offset,
+            ytl: regionOfInterest[1] + offset,
+            xbr: regionOfInterest[2] + offset,
+            ybr: regionOfInterest[3] + offset,
+        };
+
+        const clipPath = `
+            polygon(
+                evenodd,
+                0 0,
+                ${overlayWidth}px 0,
+                ${overlayWidth}px ${overlayHeight}px,
+                0 ${overlayHeight}px,
+                0 0,
+                ${overlayROI.xtl}px ${overlayROI.ytl}px,
+                ${overlayROI.xbr}px ${overlayROI.ytl}px,
+                ${overlayROI.xbr}px ${overlayROI.ybr}px,
+                ${overlayROI.xtl}px ${overlayROI.ybr}px,
+                ${overlayROI.xtl}px ${overlayROI.ytl}px
+            )
+        `;
+
+        return ReactDOM.createPortal(
+            <div
+                className='cvat-automatic-annotation-region-of-interest-overlay'
+                style={{
+                    width: overlayWidth,
+                    height: overlayHeight,
+                    clipPath,
+                }}
+            />,
+            attachmentBoard,
+        );
     }
 
     private contextmenuDisabler = (e: MouseEvent): void => {
@@ -166,277 +511,695 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
     };
 
     private cancelListener = async (): Promise<void> => {
-        const {
-            isActivated, jobInstance, frame, fetchAnnotations,
-        } = this.props;
-        const { interactiveStateID, fetching } = this.state;
-
-        if (isActivated) {
-            if (fetching && !this.interactionIsDone) {
-                // user pressed ESC
-                this.setState({ fetching: false });
-                this.interactionIsAborted = true;
-            }
-
-            if (interactiveStateID !== null) {
-                const state = this.getInteractiveState();
-                this.setState({ interactiveStateID: null });
-                await state.delete(frame);
-                fetchAnnotations();
-            }
-
-            await jobInstance.actions.freeze(false);
+        const { fetching } = this.state;
+        if (fetching) {
+            // user pressed ESC
+            this.setState({ fetching: false });
+            this.interaction.isAborted = true;
         }
     };
 
-    private onInteraction = async (e: Event): Promise<void> => {
-        const {
-            frame,
-            labels,
-            curZOrder,
-            jobInstance,
-            isActivated,
-            activeLabelID,
-            fetchAnnotations,
-            updateAnnotations,
-        } = this.props;
-        const { activeInteractor, interactiveStateID, fetching } = this.state;
+    private runInteractionRequest = async (interactionId: string): Promise<void> => {
+        const { jobInstance } = this.props;
+        const { activeInteractor, fetching } = this.state;
 
-        if (!isActivated) {
+        const { id, latestRequest } = this.interaction;
+        if (id !== interactionId || !latestRequest || fetching) {
+            // id !== interactionId: request not relevant anymore (new session has started)
+            // !latestRequest: nothing to process
+            // fetching: another request is already running
             return;
         }
 
+        const { interactor, data } = latestRequest;
+        this.interaction.latestRequest = null;
+
         try {
-            if (fetching) {
-                this.interactionIsDone = (e as CustomEvent).detail.isDone;
-                return;
-            }
+            this.interaction.closeFetchingMessage = message.loading({
+                content: `Waiting for a response from ${activeInteractor?.name}`,
+                duration: 0,
+                className: 'cvat-tracking-notice',
+            });
 
-            const interactor = activeInteractor as Model;
-
-            let result = [];
-            if ((e as CustomEvent).detail.shapesUpdated) {
+            try {
+                // run server request
                 this.setState({ fetching: true });
-                try {
-                    result = await core.lambda.call(jobInstance.task, interactor, {
-                        frame,
-                        pos_points: convertShapesForInteractor((e as CustomEvent).detail.shapes, 0),
-                        neg_points: convertShapesForInteractor((e as CustomEvent).detail.shapes, 2),
-                    });
 
-                    if (this.interactionIsAborted) {
-                        // while the server request
-                        // user has cancelled interaction (for example pressed ESC)
-                        return;
-                    }
-                } finally {
-                    this.setState({ fetching: false });
-                }
-            }
+                await this.initializeOpenCV();
+                const response = await core.lambda.call(
+                    jobInstance.taskId,
+                    interactor,
+                    { ...data, type: 'interact', job: jobInstance.id },
+                ) as InteractorResults;
 
-            if (this.interactionIsDone) {
-                // while the server request, user has done interaction (for example pressed N)
-                const object = new core.classes.ObjectState({
-                    frame,
-                    objectType: ObjectType.SHAPE,
-                    label: labels.length ? labels.filter((label: any) => label.id === activeLabelID)[0] : null,
-                    shapeType: ShapeType.POLYGON,
-                    points: result.flat(),
-                    occluded: false,
-                    zOrder: curZOrder,
-                });
-
-                await jobInstance.annotations.put([object]);
-                fetchAnnotations();
-            } else {
-                // no shape yet, then create it and save to collection
-                if (interactiveStateID === null) {
-                    // freeze history for interaction time
-                    // (points updating shouldn't cause adding new actions to history)
-                    await jobInstance.actions.freeze(true);
-                    const object = new core.classes.ObjectState({
-                        frame,
-                        objectType: ObjectType.SHAPE,
-                        label: labels.length ? labels.filter((label: any) => label.id === activeLabelID)[0] : null,
-                        shapeType: ShapeType.POLYGON,
-                        points: result.flat(),
-                        occluded: false,
-                        zOrder: curZOrder,
-                    });
-                    // need a clientID of a created object to interact with it further
-                    // so, we do not use createAnnotationAction
-                    const [clientID] = await jobInstance.annotations.put([object]);
-
-                    // update annotations on a canvas
-                    fetchAnnotations();
-                    this.setState({ interactiveStateID: clientID });
+                if (this.interaction.id !== interactionId || this.interaction.isAborted) {
+                    // new interaction session or the session is aborted
                     return;
                 }
 
-                const state = this.getInteractiveState();
-                if ((e as CustomEvent).detail.isDone) {
-                    const finalObject = new core.classes.ObjectState({
-                        frame: state.frame,
-                        objectType: state.objectType,
-                        label: state.label,
-                        shapeType: state.shapeType,
-                        points: result.length ? result.flat() : state.points,
-                        occluded: state.occluded,
-                        zOrder: state.zOrder,
+                const latestResponse: ToolsControlComponent['interaction']['latestResponse'] = [];
+                let showConfidenceControl = false;
+                for (const item of response.shapes) {
+                    if (item.type !== ShapeType.MASK) {
+                        continue;
+                    }
+
+                    const points = Int32Array.from(item.points);
+                    const contours = this.receiveContoursFromMask(points);
+                    const polygonPoints = this.receivePointsFromMask(contours);
+                    if (polygonPoints.length < 3) {
+                        continue;
+                    }
+
+                    const approximated = this.approximateResponsePoints(polygonPoints);
+                    const confidenceAttr = item.attributes.find((attr) => attr.spec_id === 0);
+                    const confidence = confidenceAttr ? +confidenceAttr.value : 1;
+                    showConfidenceControl = showConfidenceControl || !!confidenceAttr;
+                    latestResponse.push({
+                        rle: points,
+                        points: polygonPoints,
+                        contours,
+                        approximatedPoints: approximated,
+                        confidence,
                     });
-                    this.setState({ interactiveStateID: null });
-                    await state.delete(frame);
-                    await jobInstance.actions.freeze(false);
-                    await jobInstance.annotations.put([finalObject]);
-                    fetchAnnotations();
-                } else {
-                    state.points = result.flat();
-                    updateAnnotations([state]);
-                    fetchAnnotations();
                 }
+
+                this.interaction.latestResponse = latestResponse;
+                this.setState({
+                    interactorResponseReceived: !!latestResponse.length,
+                    showConfidenceControl,
+                });
+            } finally {
+                if (this.interaction.id === interactionId) {
+                    this.interaction.closeFetchingMessage?.();
+                    this.interaction.closeFetchingMessage = null;
+                }
+
+                this.setState({ fetching: false });
             }
-        } catch (err) {
+
+            this.drawIntermediateShapesOnCanvas();
+            setTimeout(() => this.runInteractionRequest(interactionId));
+        } catch (error: any) {
             notification.error({
-                description: err.toString(),
-                message: 'Interaction error occured',
+                description: <CVATMarkdown>{error.message}</CVATMarkdown>,
+                message: 'Interaction error occurred',
+                duration: null,
             });
         }
     };
 
+    private isInteractorReady = (): boolean => {
+        const { activeInteractor, activeLabelID, mode } = this.state;
+        const { frameData, isActivated } = this.props;
+        return isActivated && activeInteractor !== null &&
+            activeLabelID !== null && mode === 'interaction' && !frameData.deleted;
+    };
+
+    public activateInteraction = (
+        parameters?: CombinedState['annotation']['drawing']['activeInteractorParameters'],
+    ): void => {
+        const { canvasInstance, onInteractionStart, updateActiveControl: setActiveControl } = this.props;
+        const { activeInteractor, activeLabelID } = this.state;
+
+        this.setState({ mode: 'interaction' });
+        canvasInstance.cancel();
+        if (parameters) {
+            // remembers last action reproducible with repeat hotkey
+            onInteractionStart(activeInteractor!, activeLabelID!, parameters);
+        } else {
+            setActiveControl(ActiveControl.AI_TOOLS);
+        }
+
+        canvasInstance.interact({ enabled: true, ...(parameters ?? {}) });
+    };
+
+    private submitInteraction = (prompts: {
+        pos_points: number[][];
+        neg_points: number[][];
+        obj_bbox: number[][];
+    }): void => {
+        const { frame } = this.props;
+        const { activeInteractor, interactorRegionOfInterest } = this.state;
+
+        if (!this.isInteractorReady()) {
+            return;
+        }
+
+        if (!this.interaction.id) {
+            this.interaction.id = lodash.uniqueId('interaction_');
+        }
+
+        this.interaction.latestRequest = {
+            interactor: activeInteractor!,
+            data: {
+                frame,
+                ...prompts,
+                ...(interactorRegionOfInterest ? { roi: interactorRegionOfInterest } : {}),
+            },
+        };
+
+        this.runInteractionRequest(this.interaction.id);
+    };
+
+    private onInteraction = (e: Event): void => {
+        const { shapes } = (e as CustomEvent).detail;
+        this.submitInteraction({
+            obj_bbox: convertShapesForInteractor(shapes, 'rectangle', 'positive'),
+            pos_points: convertShapesForInteractor(shapes, 'points', 'positive'),
+            neg_points: convertShapesForInteractor(shapes, 'points', 'negative'),
+        });
+    };
+
     private onTracking = async (e: Event): Promise<void> => {
+        const { trackedShapes, activeTracker, activeLabelID } = this.state;
         const {
-            isActivated, jobInstance, frame, curZOrder, fetchAnnotations,
+            isActivated, jobInstance, frame, currentZOrder, fetchAnnotations,
         } = this.props;
 
-        if (!isActivated) {
+        if (!isActivated || !activeLabelID || !activeTracker) {
             return;
         }
 
-        const { activeLabelID } = this.state;
-        const [label] = jobInstance.task.labels.filter((_label: any): boolean => _label.id === activeLabelID);
+        const [label] = jobInstance.labels.filter((_label: any): boolean => _label.id === activeLabelID);
 
-        if (!(e as CustomEvent).detail.isDone) {
+        const { finished } = (e as CustomEvent).detail;
+        if (!finished) {
             return;
         }
 
-        this.interactionIsDone = true;
+        const { shapes } = (e as CustomEvent<{ shapes: InteractionResult[] | null }>).detail;
+        if (!Array.isArray(shapes) || !shapes.length) {
+            return;
+        }
+
         try {
-            const { points } = (e as CustomEvent).detail.shapes[0];
-            const state = new core.classes.ObjectState({
-                shapeType: ShapeType.RECTANGLE,
-                objectType: ObjectType.TRACK,
-                zOrder: curZOrder,
-                label,
-                points,
-                frame,
-                occluded: false,
-                source: 'auto',
-                attributes: {},
-            });
+            const states = shapes.map(({ points }) => (
+                new core.classes.ObjectState({
+                    shapeType: ShapeType.RECTANGLE,
+                    objectType: ObjectType.TRACK,
+                    source: core.enums.Source.SEMI_AUTO,
+                    zOrder: currentZOrder,
+                    label,
+                    points,
+                    frame,
+                    occluded: false,
+                    attributes: {},
+                    descriptions: [`Trackable (${activeTracker.name})`],
+                })
+            ));
 
-            const [clientID] = await jobInstance.annotations.put([state]);
+            const clientIDs = await jobInstance.annotations.put(states);
+            this.setState({
+                trackedShapes: [
+                    ...trackedShapes,
+                    ...clientIDs.map((clientID: number, index: number): TrackedShape => ({
+                        clientID,
+                        serverlessState: null,
+                        shapePoints: states[index].points!,
+                        trackerModel: activeTracker,
+                    })),
+                ],
+            });
 
             // update annotations on a canvas
             fetchAnnotations();
-
-            const states = await jobInstance.annotations.get(frame);
-            const [objectState] = states.filter((_state: any): boolean => _state.clientID === clientID);
-            await this.trackState(objectState);
-        } catch (err) {
+        } catch (error: any) {
             notification.error({
-                description: err.toString(),
-                message: 'Tracking error occured',
+                description: <CVATMarkdown>{error.message}</CVATMarkdown>,
+                message: 'Tracking error occurred',
+                duration: null,
             });
         }
     };
 
     private interactionListener = async (e: Event): Promise<void> => {
-        const { mode } = this.state;
+        const { isActivated, canvasInstance } = this.props;
+        const { activeInteractor, mode, interactorRegionOfInterest } = this.state;
+
+        if (!isActivated) {
+            return;
+        }
 
         if (mode === 'interaction') {
-            await this.onInteraction(e);
+            if (!activeInteractor) {
+                return;
+            }
+
+            const { shapes, finished } = (e as CustomEvent<{ shapes: InteractionResult[], finished: boolean }>).detail;
+
+            if (finished) {
+                // make an object from current result
+                // do not make one more request
+                // prevent future requests if possible
+                this.interaction.isAborted = true;
+                this.interaction.latestRequest = null;
+                this.constructFromLatestResponse();
+            } else {
+                const isRectangleRequired = activeInteractor!.params.canvas.startWithBox === true;
+                const minPosPoints = activeInteractor!.params.canvas.minPosVertices ?? 0;
+                const minNegPoints = activeInteractor!.params.canvas.minNegVertices ?? 0;
+
+                const boxes = convertShapesForInteractor(shapes, 'rectangle', 'positive');
+                const posPoints = convertShapesForInteractor(shapes, 'points', 'positive');
+                const negPoints = convertShapesForInteractor(shapes, 'points', 'negative');
+
+                if (isRectangleRequired && !boxes.length) {
+                    // there should be at least one box to proceed
+                    canvasInstance.interact({
+                        enabled: true,
+                        command: 'draw_box',
+                        settings: {
+                            crosshair: true,
+                            hint: rectangleHint,
+                            ...(interactorRegionOfInterest ? { regionOfInterest: interactorRegionOfInterest } : {}),
+                        },
+                    });
+                    return;
+                }
+
+                // auto-switch to points when something is already drawn
+                canvasInstance.interact({
+                    enabled: true,
+                    command: 'draw_points',
+                    settings: {
+                        crosshair: false,
+                        hint: getPointsHint((activeInteractor.params.canvas.minNegVertices ?? -1) >= 0),
+                        ...(interactorRegionOfInterest ? { regionOfInterest: interactorRegionOfInterest } : {}),
+                    },
+                });
+
+                if (posPoints.length < minPosPoints || negPoints.length < minNegPoints) {
+                    // there should be enough points to proceed
+                    return;
+                }
+
+                this.onInteraction(e);
+            }
         }
 
         if (mode === 'tracking') {
-            await this.onTracking(e);
+            this.onTracking(e);
         }
     };
 
     private setActiveInteractor = (value: string): void => {
         const { interactors } = this.props;
+        const [interactor] = interactors.filter((_interactor: MLModel) => `${_interactor.id}` === value);
+
         this.setState({
-            activeInteractor: interactors.filter((interactor: Model) => interactor.id === value)[0],
+            activeInteractor: interactor,
         });
     };
 
     private setActiveTracker = (value: string): void => {
         const { trackers } = this.props;
         this.setState({
-            activeTracker: trackers.filter((tracker: Model) => tracker.id === value)[0],
+            activeTracker: trackers.filter((tracker: MLModel) => tracker.id === value)[0],
         });
     };
 
-    public async trackState(state: any): Promise<void> {
-        const { jobInstance, frame } = this.props;
-        const { activeTracker, trackingFrames } = this.state;
-        const { clientID, points } = state;
+    private drawIntermediateShapesOnCanvas(): void {
+        const { canvasInstance } = this.props;
+        const { convertMasksToPolygons, thresholdValue } = this.state;
+        const shapesToBeDrawn = this.interaction.latestResponse
+            .filter(({ confidence }) => typeof confidence !== 'number' || confidence >= thresholdValue)
+            .filter(({ approximatedPoints }) => !convertMasksToPolygons || approximatedPoints.length >= 3)
+            .map(({ rle, contours, approximatedPoints }) => ({
+                shapeType: convertMasksToPolygons ? ShapeType.POLYGON : ShapeType.MASK,
+                points: convertMasksToPolygons ? approximatedPoints.flat() : rle,
+                maskOutlines: contours.map((contour) => contour.flat()),
+            }));
 
-        const tracker = activeTracker as Model;
-        try {
-            this.setState({ trackingProgress: 0, fetching: true });
-            let response = await core.lambda.call(jobInstance.task, tracker, {
-                task: jobInstance.task,
-                frame,
-                shape: points,
-            });
+        canvasInstance.interact({
+            enabled: true,
+            command: 'put_shapes',
+            payload: {
+                shapes: shapesToBeDrawn,
+            },
+        });
 
-            for (const offset of range(1, trackingFrames + 1)) {
-                /* eslint-disable no-await-in-loop */
-                const states = await jobInstance.annotations.get(frame + offset);
-                const [objectState] = states.filter((_state: any): boolean => _state.clientID === clientID);
-                response = await core.lambda.call(jobInstance.task, tracker, {
-                    task: jobInstance.task,
-                    frame: frame + offset,
-                    shape: response.points,
-                    state: response.state,
+        if (!shapesToBeDrawn.length) {
+            if (!this.interaction.noShapesMessage) {
+                this.interaction.noShapesMessage = message.info({
+                    content: 'No shapes to display',
+                    duration: 0,
                 });
-
-                const reduced = response.shape.reduce(
-                    (acc: number[], value: number, index: number): number[] => {
-                        if (index % 2) {
-                            // y
-                            acc[1] = Math.min(acc[1], value);
-                            acc[3] = Math.max(acc[3], value);
-                        } else {
-                            // x
-                            acc[0] = Math.min(acc[0], value);
-                            acc[2] = Math.max(acc[2], value);
-                        }
-                        return acc;
-                    },
-                    [
-                        Number.MAX_SAFE_INTEGER,
-                        Number.MAX_SAFE_INTEGER,
-                        Number.MIN_SAFE_INTEGER,
-                        Number.MIN_SAFE_INTEGER,
-                    ],
-                );
-
-                objectState.points = reduced;
-                await objectState.save();
-
-                this.setState({ trackingProgress: offset / trackingFrames });
             }
-        } finally {
-            this.setState({ trackingProgress: null, fetching: false });
+        } else if (this.interaction.noShapesMessage) {
+            this.interaction.noShapesMessage();
+            this.interaction.noShapesMessage = null;
         }
     }
 
-    public trackingAvailable(): boolean {
-        const { activeTracker, trackingFrames } = this.state;
-        const { trackers } = this.props;
+    private publishTrackerControls = (): void => {
+        const { activeTracker, trackedShapes } = this.state;
+        const { labels, trackers, frameData } = this.props;
+        this.updateTrackerControls(activeTracker && trackers.length && labels.length && !frameData.deleted ? {
+            trackerName: activeTracker.name,
+            trackedClientIDs: new Set(trackedShapes.map((shape) => shape.clientID)),
+            savingClientIDs: new Set(this.savingTrackingClientIDs),
+            toggleTracking: this.toggleTracking,
+        } : null);
+    };
 
-        return !!trackingFrames && !!trackers.length && activeTracker !== null;
+    private toggleTracking = async (stateToTrack: ObjectState): Promise<void> => {
+        const objectState = stateToTrack;
+        const { activeTracker, trackedShapes } = this.state;
+        if (!this.mounted || !activeTracker || objectState.objectType !== ObjectType.TRACK ||
+            objectState.shapeType !== ShapeType.RECTANGLE
+        ) return;
+
+        const clientID = objectState.clientID as number;
+        if (this.savingTrackingClientIDs.has(clientID)) return;
+        this.savingTrackingClientIDs.add(clientID);
+        const isTracked = trackedShapes.some((shape) => shape.clientID === clientID);
+        const originalDescriptions = [...objectState.descriptions];
+        const originalKeyframe = objectState.keyframe;
+        try {
+            this.publishTrackerControls();
+            objectState.descriptions = isTracked ? [] : [`Trackable (${activeTracker.name})`];
+            if (!isTracked) objectState.keyframe = true;
+            await objectState.save();
+            if (!this.mounted) return;
+
+            this.setState((state) => ({
+                trackedShapes: isTracked ? state.trackedShapes.filter((shape) => shape.clientID !== clientID) : [
+                    ...state.trackedShapes.filter((shape) => shape.clientID !== clientID),
+                    {
+                        clientID,
+                        serverlessState: null,
+                        shapePoints: objectState.points as number[],
+                        trackerModel: activeTracker,
+                    },
+                ],
+            }));
+            this.props.fetchAnnotations();
+        } catch (error: unknown) {
+            objectState.descriptions = originalDescriptions;
+            objectState.keyframe = originalKeyframe;
+            notification.error({
+                message: 'Tracking error occurred',
+                description: <CVATMarkdown>{error instanceof Error ? error.message : String(error)}</CVATMarkdown>,
+                duration: null,
+            });
+        } finally {
+            this.savingTrackingClientIDs.delete(clientID);
+            if (this.mounted) this.publishTrackerControls();
+        }
+    };
+
+    private async checkTrackedStates(prevProps: Props): Promise<void> {
+        const {
+            frame,
+            jobInstance,
+            states: objectStates,
+            trackers,
+            fetchAnnotations,
+            switchNavigationBlocked,
+        } = this.props;
+        const { trackedShapes } = this.state;
+        let withServerRequest = false;
+
+        type AccumulatorType = {
+            // These maps are indexed by tracker ID.
+            stateful: Map<string | number, {
+                clientIDs: number[];
+                states: any[];
+                shapes: MinimalShape[];
+            }>;
+            stateless: Map<string | number, {
+                clientIDs: number[];
+                shapes: MinimalShape[];
+            }>;
+        };
+
+        if (prevProps.frame !== frame && trackedShapes.length) {
+            // 1. find all trackable objects on the current frame
+            // 2. divide them into two groups: with relevant state, without relevant state
+            const trackingData = trackedShapes.reduce<AccumulatorType>(
+                (acc: AccumulatorType, trackedShape: TrackedShape): AccumulatorType => {
+                    const {
+                        serverlessState, shapePoints, clientID, trackerModel,
+                    } = trackedShape;
+                    const clientState = objectStates.find((_state): boolean => _state.clientID === clientID);
+                    const keyframes = clientState?.keyframes;
+
+                    if (
+                        !clientState || !keyframes ||
+                        keyframes?.prev !== frame - 1 ||
+                        (typeof keyframes?.last === 'number' && keyframes?.last >= frame)
+                    ) {
+                        return acc;
+                    }
+
+                    if (clientState && !clientState.outside) {
+                        const points = clientState.points as number[];
+                        withServerRequest = true;
+                        const stateIsRelevant =
+                            serverlessState !== null &&
+                            points.length === shapePoints.length &&
+                            points.every((coord: number, i: number) => coord === shapePoints[i]);
+                        if (stateIsRelevant) {
+                            const container = acc.stateful.get(trackerModel.id) ?? {
+                                clientIDs: [],
+                                shapes: [],
+                                states: [],
+                            };
+                            container.clientIDs.push(clientID);
+                            container.shapes.push({ type: clientState.shapeType, points });
+                            container.states.push(serverlessState);
+                            acc.stateful.set(trackerModel.id, container);
+                        } else {
+                            const container = acc.stateless.get(trackerModel.id) ?? {
+                                clientIDs: [],
+                                shapes: [],
+                            };
+                            container.clientIDs.push(clientID);
+                            container.shapes.push({ type: clientState.shapeType, points });
+                            acc.stateless.set(trackerModel.id, container);
+                        }
+                    }
+
+                    return acc;
+                },
+                {
+                    stateful: new Map(),
+                    stateless: new Map(),
+                },
+            );
+
+            try {
+                if (withServerRequest) {
+                    switchNavigationBlocked(true);
+                }
+                // 3. get relevant state for the second group
+                for (const [trackerID, trackableObjects] of trackingData.stateless) {
+                    let hideMessage = null;
+                    try {
+                        const [tracker] = trackers.filter((_tracker: MLModel) => _tracker.id === trackerID);
+                        if (!tracker) {
+                            throw new Error(`Suitable tracker with ID ${trackerID} not found in tracker list`);
+                        }
+
+                        const numOfObjects = trackableObjects.clientIDs.length;
+                        hideMessage = message.loading({
+                            content: `${tracker.name}: states are being initialized for ${numOfObjects} ${
+                                numOfObjects > 1 ? 'objects' : 'object'
+                            } ..`,
+                            duration: 0,
+                            className: 'cvat-tracking-notice',
+                        });
+
+                        const response = await core.lambda.call(jobInstance.taskId, tracker, {
+                            type: 'init_tracking',
+                            frame: frame - 1,
+                            shapes: trackableObjects.shapes,
+                            job: jobInstance.id,
+                        }) as TrackerResults;
+
+                        const { states: serverlessStates } = response;
+                        const statefulContainer = trackingData.stateful.get(trackerID) ?? {
+                            clientIDs: [],
+                            shapes: [],
+                            states: [],
+                        };
+
+                        Array.prototype.push.apply(statefulContainer.clientIDs, trackableObjects.clientIDs);
+                        Array.prototype.push.apply(statefulContainer.shapes, trackableObjects.shapes);
+                        Array.prototype.push.apply(statefulContainer.states, serverlessStates);
+                        trackingData.stateful.set(trackerID, statefulContainer);
+                        trackingData.stateless.delete(trackerID);
+                    } catch (error: any) {
+                        notification.error({
+                            message: 'Tracker initialization error',
+                            description: <CVATMarkdown>{error.message}</CVATMarkdown>,
+                            duration: null,
+                        });
+                    } finally {
+                        if (hideMessage) hideMessage();
+                    }
+                }
+
+                for (const [trackerID, trackableObjects] of trackingData.stateful) {
+                    // 4. run tracking for all the objects
+                    let hideMessage = null;
+                    try {
+                        const [tracker] = trackers.filter((_tracker: MLModel) => _tracker.id === trackerID);
+                        if (!tracker) {
+                            throw new Error(`Suitable tracker with ID ${trackerID} not found in tracker list`);
+                        }
+
+                        const numOfObjects = trackableObjects.clientIDs.length;
+                        hideMessage = message.loading({
+                            content: `${tracker.name}: ${numOfObjects} ${
+                                numOfObjects > 1 ? 'objects are' : 'object is'
+                            } being tracked..`,
+                            duration: 0,
+                            className: 'cvat-tracking-notice',
+                        });
+
+                        const response = await core.lambda.call(jobInstance.taskId, tracker, {
+                            type: 'track',
+                            frame,
+                            states: trackableObjects.states,
+                            job: jobInstance.id,
+                        }) as TrackerResults;
+
+                        response.shapes = response.shapes.map(trackedRectangleMapper);
+                        for (let i = 0; i < trackableObjects.clientIDs.length; i++) {
+                            const clientID = trackableObjects.clientIDs[i];
+                            const shape = response.shapes[i];
+                            const state = response.states[i];
+                            const [objectState] = objectStates.filter(
+                                (_state: any): boolean => _state.clientID === clientID,
+                            );
+                            const [trackedShape] = trackedShapes.filter(
+                                (_trackedShape: TrackedShape) => _trackedShape.clientID === clientID,
+                            );
+                            objectState.points = shape.points;
+                            objectState.save().then(() => {
+                                trackedShape.serverlessState = state;
+                                trackedShape.shapePoints = shape.points;
+                            });
+                        }
+                    } catch (error: any) {
+                        notification.error({
+                            message: 'Tracking error',
+                            description: <CVATMarkdown>{error.message}</CVATMarkdown>,
+                            duration: null,
+                        });
+                    } finally {
+                        if (hideMessage) hideMessage();
+                        fetchAnnotations();
+                    }
+                }
+            } finally {
+                if (withServerRequest) {
+                    switchNavigationBlocked(false);
+                }
+            }
+        }
+    }
+
+    private async constructFromLatestResponse(): Promise<void> {
+        const { convertMasksToPolygons, thresholdValue, activeLabelID } = this.state;
+        const {
+            frame, labels, currentZOrder, createAnnotations,
+        } = this.props;
+
+        if (!this.interaction.latestResponse.length) {
+            return;
+        }
+
+        const common = {
+            frame,
+            objectType: ObjectType.SHAPE,
+            source: core.enums.Source.SEMI_AUTO,
+            label: labels.find((label) => label.id === activeLabelID as number) as Label,
+            occluded: false,
+            zOrder: currentZOrder,
+        };
+
+        const objectsToConstruct = this.interaction.latestResponse.filter(
+            ({ confidence }) => typeof confidence !== 'number' || confidence >= thresholdValue,
+        );
+
+        let objects: ObjectState[] = [];
+        if (convertMasksToPolygons) {
+            objects = objectsToConstruct
+                .filter(({ approximatedPoints }) => approximatedPoints.length >= 3)
+                .map(({ approximatedPoints }) => (
+                    new core.classes.ObjectState({
+                        shapeType: ShapeType.POLYGON,
+                        points: approximatedPoints.flat(),
+                        ...common,
+                    })
+                ));
+        } else {
+            objects = objectsToConstruct
+                .filter(({ rle }) => rle.length >= 6) // minimal RLE length for a valid shape
+                .map(({ rle }) => (
+                    new core.classes.ObjectState({
+                        shapeType: ShapeType.MASK,
+                        points: Array.from(rle),
+                        ...common,
+                    })
+                ));
+        }
+        createAnnotations(objects);
+    }
+
+    private async initializeOpenCV(): Promise<void> {
+        if (!openCVWrapper.isInitialized) {
+            const hide = message.loading('Initializing contour utilities..', 0);
+            try {
+                await openCVWrapper.initialize(() => {});
+            } catch (error: any) {
+                notification.error({
+                    message: 'Could not initialize contour utilities',
+                    description: <CVATMarkdown>{error.message}</CVATMarkdown>,
+                    duration: null,
+                });
+            } finally {
+                hide();
+            }
+        }
+    }
+
+    private receivePointsFromMask(contours: [number, number][][]): [number, number][] {
+        if (contours.length) {
+            return contours[0].map<[number, number]>((val) => [val[0], val[1]]);
+        }
+
+        return [];
+    }
+
+    private receiveContoursFromMask(mask: Int32Array): [number, number][][] {
+        if (!openCVWrapper.isInitialized) {
+            throw new Error('OpenCV was not initialized');
+        }
+
+        if (mask.length < 6) {
+            // minimal non-empty RLE is 6 points
+            return [];
+        }
+
+        return openCVWrapper.getContoursFromStateSync({ points: mask, shapeType: ShapeType.MASK });
+    }
+
+    private approximateResponsePoints(points: [number, number][]): [number, number][] {
+        if (!openCVWrapper.isInitialized) {
+            throw new Error('OpenCV was not initialized');
+        }
+
+        const { approxPolyAccuracy } = this.state;
+        if (points.length > 3) {
+            const threshold = openCVWrapper.utils.thresholdFromAccuracy(approxPolyAccuracy);
+            return openCVWrapper.contours.approxPoly(points, threshold);
+        }
+
+        return points;
     }
 
     private renderLabelBlock(): JSX.Element {
@@ -465,40 +1228,32 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
 
     private renderTrackerBlock(): JSX.Element {
         const {
-            trackers, canvasInstance, jobInstance, frame, onInteractionStart,
+            canvasInstance, jobInstance, frame, onInteractionStart,
         } = this.props;
-        const {
-            activeTracker, activeLabelID, fetching, trackingFrames,
-        } = this.state;
+        const { activeTracker, activeLabelID, fetching } = this.state;
 
-        if (!trackers.length) {
-            return (
-                <Row justify='center' align='middle' style={{ marginTop: '5px' }}>
-                    <Col>
-                        <Text type='warning' className='cvat-text-color'>
-                            No available trackers found
-                        </Text>
-                    </Col>
-                </Row>
-            );
-        }
+        const supportedTrackers = this.getSupportedTrackers();
 
         return (
             <>
                 <Row justify='start'>
                     <Col>
-                        <Text className='cvat-text-color'>Tracker</Text>
+                        <Text className='cvat-text-color'>Model</Text>
                     </Col>
                 </Row>
                 <Row align='middle' justify='center'>
                     <Col span={24}>
                         <Select
                             style={{ width: '100%' }}
-                            defaultValue={trackers[0].name}
+                            defaultValue={supportedTrackers[0]?.name}
+                            placeholder='Select a model'
                             onChange={this.setActiveTracker}
+                            dropdownRender={(menu) => (
+                                <ModelSelectorDropdownContent>{menu}</ModelSelectorDropdownContent>
+                            )}
                         >
-                            {trackers.map(
-                                (tracker: Model): JSX.Element => (
+                            {supportedTrackers.map(
+                                (tracker: MLModel): JSX.Element => (
                                     <Select.Option value={tracker.id} title={tracker.description} key={tracker.id}>
                                         {tracker.name}
                                     </Select.Option>
@@ -507,27 +1262,7 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
                         </Select>
                     </Col>
                 </Row>
-                <Row align='middle' justify='start' style={{ marginTop: '5px' }}>
-                    <Col>
-                        <Text>Tracking frames</Text>
-                    </Col>
-                    <Col offset={2}>
-                        <InputNumber
-                            value={trackingFrames}
-                            step={1}
-                            min={1}
-                            precision={0}
-                            max={jobInstance.stopFrame - frame}
-                            onChange={(value: number | undefined | string | null): void => {
-                                if (typeof value !== 'undefined' && value !== null) {
-                                    this.setState({
-                                        trackingFrames: +value,
-                                    });
-                                }
-                            }}
-                        />
-                    </Col>
-                </Row>
+                {this.renderLabelBlock()}
                 <Row align='middle' justify='end'>
                     <Col>
                         <Button
@@ -536,16 +1271,15 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
                             className='cvat-tools-track-button'
                             disabled={!activeTracker || fetching || frame === jobInstance.stopFrame}
                             onClick={() => {
-                                this.setState({ mode: 'tracking' });
-
-                                if (activeTracker) {
+                                if (activeTracker && activeLabelID) {
+                                    this.setState({ mode: 'tracking' });
+                                    const parameters = {
+                                        command: 'draw_box' as const,
+                                        settings: { crosshair: true, hint: rectangleHint },
+                                    };
                                     canvasInstance.cancel();
-                                    canvasInstance.interact({
-                                        shapeType: 'rectangle',
-                                        enabled: true,
-                                    });
-
-                                    onInteractionStart(activeTracker, activeLabelID);
+                                    canvasInstance.interact({ enabled: true, ...parameters });
+                                    onInteractionStart(activeTracker, activeLabelID, parameters);
                                 }
                             }}
                         >
@@ -558,39 +1292,52 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
     }
 
     private renderInteractorBlock(): JSX.Element {
-        const { interactors, canvasInstance, onInteractionStart } = this.props;
-        const { activeInteractor, activeLabelID, fetching } = this.state;
+        const { interactors, interactorExtras, frameData } = this.props;
+        const {
+            activeInteractor, activeLabelID, fetching, allowROI,
+            startInteractingWithBox, convertMasksToPolygons,
+        } = this.state;
 
-        if (!interactors.length) {
-            return (
-                <Row justify='center' align='middle' style={{ marginTop: '5px' }}>
-                    <Col>
-                        <Text type='warning' className='cvat-text-color'>
-                            No available interactors found
-                        </Text>
-                    </Col>
-                </Row>
-            );
-        }
+        const minNegVertices = activeInteractor?.params?.canvas?.minNegVertices ?? -1;
+        const renderStartWithBox = activeInteractor?.params?.canvas?.startWithBoxOptional ?? false;
+
+        const renderedInteractorExtras = interactorExtras
+            .sort((a, b) => a.data.weight - b.data.weight)
+            .filter((plugin) => plugin.data.shouldBeRendered(this.props, this.state))
+            .map(({ component: Component }, index) => (
+                <Component
+                    targetProps={this.props}
+                    targetState={this.state}
+                    activateInteraction={this.activateInteraction}
+                    submitInteraction={this.submitInteraction}
+                    key={index}
+                />
+            ));
+
+        const isDisabled = !activeInteractor || fetching || !activeLabelID || frameData.deleted;
 
         return (
             <>
                 <Row justify='start'>
                     <Col>
-                        <Text className='cvat-text-color'>Interactor</Text>
+                        <Text className='cvat-text-color'>Model</Text>
                     </Col>
                 </Row>
-                <Row align='middle' justify='center'>
-                    <Col span={24}>
+                <Row align='middle' justify='space-between'>
+                    <Col span={22}>
                         <Select
                             style={{ width: '100%' }}
-                            defaultValue={interactors[0].name}
+                            defaultValue={interactors.length ? `${interactors[0].id}` : undefined}
+                            placeholder='Select a model'
                             onChange={this.setActiveInteractor}
+                            dropdownRender={(menu) => (
+                                <ModelSelectorDropdownContent>{menu}</ModelSelectorDropdownContent>
+                            )}
                         >
                             {interactors.map(
-                                (interactor: Model): JSX.Element => (
+                                (interactor: MLModel): JSX.Element => (
                                     <Select.Option
-                                        value={interactor.id}
+                                        value={`${interactor.id}`}
                                         title={interactor.description}
                                         key={interactor.id}
                                     >
@@ -600,30 +1347,81 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
                             )}
                         </Select>
                     </Col>
+                    <Col span={2} className='cvat-interactors-tips-icon-container'>
+                        <Popover
+                            destroyTooltipOnHide
+                            content={(
+                                <ToolsTooltips
+                                    name={activeInteractor?.name}
+                                    withNegativePoints={minNegVertices >= 0}
+                                    {...(activeInteractor?.tip || {})}
+                                />
+                            )}
+                        >
+                            <QuestionCircleOutlined />
+                        </Popover>
+                    </Col>
                 </Row>
+                {this.renderLabelBlock()}
+                <div className='cvat-tools-interactor-setups'>
+                    {allowROI && this.renderROIControls()}
+                    <div>
+                        <Switch
+                            checked={convertMasksToPolygons}
+                            onChange={(checked: boolean) => {
+                                this.setState({ convertMasksToPolygons: checked });
+                            }}
+                        />
+                        <Text>Convert masks to polygons</Text>
+                    </div>
+                    {renderStartWithBox && (
+                        <div>
+                            <Switch
+                                checked={startInteractingWithBox}
+                                onChange={(value: boolean) => {
+                                    localStorage.setItem(startWithBoxStorageItem, value.toString());
+                                    this.setState({ startInteractingWithBox: value });
+                                }}
+                            />
+                            <Text>Start with a bounding box</Text>
+                        </div>
+                    )}
+                </div>
+                <div className='cvat-tools-interactor-extras'>
+                    {renderedInteractorExtras}
+                </div>
                 <Row align='middle' justify='end'>
                     <Col>
                         <Button
                             type='primary'
                             loading={fetching}
                             className='cvat-tools-interact-button'
-                            disabled={!activeInteractor || fetching}
+                            disabled={isDisabled}
                             onClick={() => {
-                                this.setState({ mode: 'interaction' });
+                                if (!isDisabled) {
+                                    const startWithBox = activeInteractor.params.canvas.startWithBoxOptional ? (
+                                        startInteractingWithBox
+                                    ) : activeInteractor.params.canvas.startWithBox ?? false;
 
-                                if (activeInteractor) {
-                                    canvasInstance.cancel();
-                                    canvasInstance.interact({
-                                        shapeType: 'points',
-                                        enabled: true,
-                                        ...activeInteractor.params.canvas,
-                                    });
+                                    const parameters = {
+                                        command: startWithBox ? 'draw_box' as const : 'draw_points' as const,
+                                        settings: {
+                                            appendCursorPositionAsPoint: false,
+                                            removalStrategy: 'any' as const,
+                                            points_type: 'any' as const,
+                                            crosshair: startWithBox,
+                                            hint: startWithBox ? rectangleHint : getPointsHint(minNegVertices >= 0),
+                                            ...(this.state.interactorRegionOfInterest ? {
+                                                regionOfInterest: this.state.interactorRegionOfInterest,
+                                            } : {}),
+                                        },
+                                    };
 
-                                    onInteractionStart(activeInteractor, activeLabelID);
+                                    this.activateInteraction(parameters);
                                 }
                             }}
                         >
-                            Interact
+                            Add visual prompts
                         </Button>
                     </Col>
                 </Row>
@@ -633,51 +1431,92 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
 
     private renderDetectorBlock(): JSX.Element {
         const {
-            jobInstance, detectors, curZOrder, frame, fetchAnnotations,
+            jobInstance, detectors, currentZOrder, frame, labels, frameData,
+            createAnnotations,
         } = this.props;
-
-        if (!detectors.length) {
-            return (
-                <Row justify='center' align='middle' style={{ marginTop: '5px' }}>
-                    <Col>
-                        <Text type='warning' className='cvat-text-color'>
-                            No available detectors found
-                        </Text>
-                    </Col>
-                </Row>
-            );
-        }
 
         return (
             <DetectorRunner
                 withCleanup={false}
                 models={detectors}
-                task={jobInstance.task}
-                runInference={async (task: any, model: Model, body: object) => {
+                labels={labels}
+                dimension={jobInstance.dimension}
+                frameWidth={frameData.width}
+                frameHeight={frameData.height}
+                canvasInstance={this.props.canvasInstance}
+                onRegionOfInterestChange={(detectorRegionOfInterest) => (
+                    this.setState({ detectorRegionOfInterest })
+                )}
+                runInference={async (model: MLModel, body: AnnotateTaskRequestBody) => {
+                    function loadAttributes(
+                        attributes: { spec_id: number; value: string }[],
+                    ): Record<number, string> {
+                        return Object.fromEntries(attributes.map((a) => [a.spec_id, a.value]));
+                    }
+
                     try {
                         this.setState({ mode: 'detection', fetching: true });
-                        const result = await core.lambda.call(task, model, { ...body, frame });
-                        const states = result.map(
-                            (data: any): any =>
-                                new core.classes.ObjectState({
-                                    shapeType: data.type,
-                                    label: task.labels.filter((label: any): boolean => label.name === data.label)[0],
-                                    points: data.points,
-                                    objectType: ObjectType.SHAPE,
-                                    frame,
-                                    occluded: false,
-                                    source: 'auto',
-                                    attributes: {},
-                                    zOrder: curZOrder,
-                                }),
-                        );
 
-                        await jobInstance.annotations.put(states);
-                        fetchAnnotations();
-                    } catch (error) {
+                        // The function call endpoint doesn't support the cleanup parameter.
+                        const restOfBody = lodash.omit(body, 'cleanup');
+
+                        const result = await core.lambda.call(jobInstance.taskId, model, {
+                            ...restOfBody, type: 'annotate_frame', frame, job: jobInstance.id,
+                        }) as DetectorResults;
+
+                        const tagStates = result.tags.map((tag) => {
+                            const jobLabel = jobInstance.labels
+                                .find((jLabel) => jLabel.id === tag.label_id)!;
+
+                            return new core.classes.ObjectState({
+                                attributes: loadAttributes(tag.attributes),
+                                frame,
+                                label: jobLabel,
+                                objectType: ObjectType.TAG,
+                                source: core.enums.Source.AUTO,
+                            });
+                        });
+
+                        const shapeStates = result.shapes.map((shape) => {
+                            const jobLabel = jobInstance.labels
+                                .find((jLabel) => jLabel.id === shape.label_id)!;
+
+                            return new core.classes.ObjectState({
+                                attributes: loadAttributes(shape.attributes),
+                                elements: shape.elements?.map((element) => {
+                                    const jobSublabel = jobLabel.structure!.sublabels
+                                        .find((sublabel) => sublabel.id === element.label_id)!;
+
+                                    return {
+                                        attributes: loadAttributes(element.attributes),
+                                        frame,
+                                        label: jobSublabel,
+                                        objectType: ObjectType.SHAPE,
+                                        occluded: element.occluded,
+                                        outside: element.outside,
+                                        points: element.points,
+                                        shapeType: element.type,
+                                        source: core.enums.Source.AUTO,
+                                    };
+                                }),
+                                frame,
+                                label: jobLabel,
+                                objectType: ObjectType.SHAPE,
+                                occluded: shape.occluded,
+                                points: shape.points,
+                                rotation: shape.rotation,
+                                shapeType: shape.type,
+                                source: core.enums.Source.AUTO,
+                                zOrder: currentZOrder,
+                            });
+                        });
+
+                        createAnnotations([...tagStates, ...shapeStates]);
+                    } catch (error: any) {
                         notification.error({
-                            description: error.toString(),
-                            message: 'Detection error occured',
+                            description: <CVATMarkdown>{error.message}</CVATMarkdown>,
+                            message: 'Detection error occurred',
+                            duration: null,
                         });
                     } finally {
                         this.setState({ fetching: false });
@@ -693,36 +1532,44 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
                 <Row justify='start'>
                     <Col>
                         <Text className='cvat-text-color' strong>
-                            AI Tools
+                            AI assistance
                         </Text>
                     </Col>
                 </Row>
-                <Tabs type='card' tabBarGutter={8}>
-                    <Tabs.TabPane key='interactors' tab='Interactors'>
-                        {this.renderLabelBlock()}
-                        {this.renderInteractorBlock()}
-                    </Tabs.TabPane>
-                    <Tabs.TabPane key='detectors' tab='Detectors'>
-                        {this.renderDetectorBlock()}
-                    </Tabs.TabPane>
-                    <Tabs.TabPane key='trackers' tab='Trackers'>
-                        {this.renderLabelBlock()}
-                        {this.renderTrackerBlock()}
-                    </Tabs.TabPane>
-                </Tabs>
+                <Tabs
+                    type='card'
+                    tabBarGutter={8}
+                    activeKey={this.state.activeTab}
+                    onChange={(key) => this.setState({ activeTab: key as 'interactors' | 'detectors' | 'trackers' })}
+                    items={[{
+                        key: 'interactors',
+                        label: 'Prompting',
+                        children: this.renderInteractorBlock(),
+                    }, {
+                        key: 'detectors',
+                        label: 'Auto-labeling',
+                        children: this.renderDetectorBlock(),
+                    }, {
+                        key: 'trackers',
+                        label: 'Tracking',
+                        children: this.renderTrackerBlock(),
+                    }]}
+                />
             </div>
         );
     }
 
     public render(): JSX.Element | null {
         const {
-            interactors, detectors, trackers, isActivated, canvasInstance, labels,
+            isActivated,
+            canvasInstance, labels, frameData,
         } = this.props;
-        const { fetching, trackingProgress } = this.state;
+        const {
+            fetching, approxPolyAccuracy, interactorResponseReceived, thresholdValue,
+            showConfidenceControl, mode, convertMasksToPolygons,
+        } = this.state;
 
-        if (![...interactors, ...detectors, ...trackers].length) return null;
-
-        const dynamcPopoverPros = isActivated ?
+        const dynamicPopoverProps = isActivated ?
             {
                 overlayStyle: {
                     display: 'none',
@@ -741,27 +1588,61 @@ export class ToolsControlComponent extends React.PureComponent<Props, State> {
                 className: 'cvat-tools-control',
             };
 
-        return !labels.length ? (
-            <Icon className=' cvat-tools-control cvat-disabled-canvas-control' component={AIToolsIcon} />
-        ) : (
+        const showAnyContent = labels.length && !frameData.deleted;
+        const showInteractionContent = isActivated && mode === 'interaction' && interactorResponseReceived;
+        const showDetectionContent = fetching && mode === 'detection';
+
+        const interactionContent: JSX.Element | null = showInteractionContent ? (
             <>
-                <Modal
-                    title='Making a server request'
-                    zIndex={Number.MAX_SAFE_INTEGER}
-                    visible={fetching}
-                    closable={false}
-                    footer={[]}
+                { convertMasksToPolygons && (
+                    <ApproximationAccuracy
+                        approxPolyAccuracy={approxPolyAccuracy}
+                        onChange={(value: number) => {
+                            this.setState({ approxPolyAccuracy: value });
+                        }}
+                    />
+                )}
+                { showConfidenceControl && (
+                    <ConfidenceThreshold
+                        thresholdValue={thresholdValue}
+                        onChange={(value: number) => {
+                            this.setState({ thresholdValue: value });
+                        }}
+                    />
+                )}
+            </>
+        ) : null;
+
+        const detectionContent: JSX.Element | null = showDetectionContent ? (
+            <Modal
+                title='Making a server request'
+                zIndex={Number.MAX_SAFE_INTEGER}
+                open
+                destroyOnClose
+                closable={false}
+                footer={[]}
+            >
+                <Text>Waiting for a server response..</Text>
+                <LoadingOutlined style={{ marginLeft: '10px' }} />
+            </Modal>
+        ) : null;
+
+        return showAnyContent ? (
+            <>
+                {this.renderRegionOfInterestOverlay()}
+                <CustomPopover
+                    {...dynamicPopoverProps}
+                    placement='right'
+                    content={this.renderPopoverContent()}
+                    onVisibleChange={(visible: boolean) => this.setState({ toolsPopoverVisible: visible })}
                 >
-                    <Text>Waiting for a server response..</Text>
-                    <LoadingOutlined style={{ marginLeft: '10px' }} />
-                    {trackingProgress !== null && (
-                        <Progress percent={+(trackingProgress * 100).toFixed(0)} status='active' />
-                    )}
-                </Modal>
-                <CustomPopover {...dynamcPopoverPros} placement='right' content={this.renderPopoverContent()}>
                     <Icon {...dynamicIconProps} component={AIToolsIcon} />
                 </CustomPopover>
+                {interactionContent}
+                {detectionContent}
             </>
+        ) : (
+            <Icon className=' cvat-tools-control cvat-disabled-canvas-control' component={AIToolsIcon} />
         );
     }
 }

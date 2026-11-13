@@ -1,200 +1,222 @@
-// Copyright (C) 2020-2021 Intel Corporation
+// Copyright (C) 2020-2022 Intel Corporation
+// Copyright (C) CVAT.ai Corporation
 //
 // SPDX-License-Identifier: MIT
 
-import React from 'react';
-import Menu from 'antd/lib/menu';
+import React, { useCallback, useEffect, useState } from 'react';
+import { useSelector, useDispatch } from 'react-redux';
+import { useHistory } from 'react-router';
 import Modal from 'antd/lib/modal';
-// eslint-disable-next-line import/no-extraneous-dependencies
-import { MenuInfo } from 'rc-menu/lib/interface';
+import Dropdown from 'antd/lib/dropdown';
+import Button from 'antd/lib/button';
+import message from 'antd/lib/message';
+import Icon from '@ant-design/icons';
+import { MenuProps } from 'antd/lib/menu';
 
-import DumpSubmenu from 'components/actions-menu/dump-submenu';
-import LoadSubmenu from 'components/actions-menu/load-submenu';
-import ExportSubmenu from 'components/actions-menu/export-submenu';
+import { MainMenuIcon } from 'icons';
+import { Job, JobState } from 'cvat-core-wrapper';
+import { usePlugins } from 'utils/hooks';
 
-interface Props {
-    taskMode: string;
-    loaders: any[];
-    dumpers: any[];
-    loadActivity: string | null;
-    dumpActivities: string[] | null;
-    exportActivities: string[] | null;
-    isReviewer: boolean;
-    jobInstance: any;
-    onClickMenu(params: MenuInfo, file?: File): void;
-    setForceExitAnnotationFlag(forceExit: boolean): void;
-    saveAnnotations(jobInstance: any, afterSave?: () => void): void;
-}
+import { openAnnotationsActionModal } from 'components/annotation-page/annotations-actions/annotations-actions-modal';
+import { CombinedState } from 'reducers';
+import {
+    finishCurrentJobAsync,
+    removeAnnotationsAsync as removeAnnotationsAsyncAction,
+} from 'actions/annotation-actions';
+import { exportActions } from 'actions/export-actions';
+import { importActions } from 'actions/import-actions';
+import { updateJobAsync } from 'actions/jobs-actions';
+import RemoveAnnotationsConfirm, { RemoveAnnotationsConfirmProps } from './remove-annotations-confirm';
 
 export enum Actions {
-    DUMP_TASK_ANNO = 'dump_task_anno',
     LOAD_JOB_ANNO = 'load_job_anno',
-    EXPORT_TASK_DATASET = 'export_task_dataset',
-    REMOVE_ANNO = 'remove_anno',
+    EXPORT_JOB_DATASET = 'export_job_dataset',
+    REMOVE_ANNOTATIONS = 'remove_annotations',
+    RUN_ACTIONS = 'run_actions',
     OPEN_TASK = 'open_task',
-    REQUEST_REVIEW = 'request_review',
-    SUBMIT_REVIEW = 'submit_review',
     FINISH_JOB = 'finish_job',
-    RENEW_JOB = 'renew_job',
 }
 
-export default function AnnotationMenuComponent(props: Props): JSX.Element {
+interface Props {
+    removeAnnotationsConfirmComponent?: React.ComponentType<RemoveAnnotationsConfirmProps>;
+}
+
+function AnnotationMenuComponent(props: Props): JSX.Element {
     const {
-        taskMode,
-        loaders,
-        dumpers,
-        loadActivity,
-        dumpActivities,
-        exportActivities,
-        isReviewer,
-        jobInstance,
-        onClickMenu,
-        setForceExitAnnotationFlag,
-        saveAnnotations,
+        removeAnnotationsConfirmComponent: RemoveAnnotationsConfirmComponent = RemoveAnnotationsConfirm,
     } = props;
+    const dispatch = useDispatch();
+    const history = useHistory();
+    const jobInstance = useSelector((state: CombinedState) => state.annotation.job.instance as Job);
+    const [jobState, setJobState] = useState(jobInstance.state);
+    const [removeAnnotationsConfirmOpen, setRemoveAnnotationsConfirmOpen] = useState(false);
+    const pluginActions = usePlugins(
+        (state: CombinedState) => state.plugins.components.annotationPage.menuActions.items,
+        { jobInstance },
+    );
+    const { stopFrame } = jobInstance;
 
-    const jobStatus = jobInstance.status;
-    const taskID = jobInstance.task.id;
+    useEffect(() => {
+        setJobState(jobInstance.state);
+    }, [jobInstance.state]);
 
-    let latestParams: MenuInfo | null = null;
-    function onClickMenuWrapper(params: MenuInfo | null, file?: File): void {
-        const copyParams = params || latestParams;
-        if (!copyParams) {
-            return;
-        }
-        latestParams = params;
+    const exportDataset = useCallback(() => {
+        dispatch(exportActions.openExportDatasetModal(jobInstance));
+    }, [jobInstance]);
 
-        function checkUnsavedChanges(_copyParams: MenuInfo): void {
-            if (jobInstance.annotations.hasUnsavedChanges()) {
-                Modal.confirm({
-                    title: 'The job has unsaved annotations',
-                    content: 'Would you like to save changes before continue?',
-                    className: 'cvat-modal-content-save-job',
-                    okButtonProps: {
-                        children: 'Save',
-                    },
-                    cancelButtonProps: {
-                        children: 'No',
-                    },
-                    onOk: () => {
-                        saveAnnotations(jobInstance, () => onClickMenu(_copyParams));
-                    },
-                    onCancel: () => {
-                        // do not ask leave confirmation
-                        setForceExitAnnotationFlag(true);
-                        setTimeout(() => {
-                            onClickMenu(_copyParams);
-                        });
-                    },
-                });
-            } else {
-                onClickMenu(_copyParams);
-            }
-        }
-
-        if (copyParams.keyPath.length === 2) {
-            const [, action] = copyParams.keyPath;
-            if (action === Actions.LOAD_JOB_ANNO) {
-                if (file) {
-                    Modal.confirm({
-                        title: 'Current annotation will be lost',
-                        content: 'You are going to upload new annotations to this job. Continue?',
-                        className: 'cvat-modal-content-load-job-annotation',
-                        onOk: () => {
-                            onClickMenu(copyParams, file);
-                        },
-                        okButtonProps: {
-                            type: 'primary',
-                            danger: true,
-                        },
-                        okText: 'Update',
-                    });
-                }
-            } else {
-                onClickMenu(copyParams);
-            }
-        } else if (copyParams.key === Actions.REMOVE_ANNO) {
-            Modal.confirm({
-                title: 'All the annotations will be removed',
-                content:
-                    'You are going to remove all the annotations from the client. ' +
-                    'It will stay on the server till you save the job. Continue?',
-                className: 'cvat-modal-confirm-remove-annotation',
-                onOk: () => {
-                    onClickMenu(copyParams);
-                },
-                okButtonProps: {
-                    type: 'primary',
-                    danger: true,
-                },
-                okText: 'Delete',
+    const finishJob = useCallback(() => {
+        dispatch(finishCurrentJobAsync(() => {
+            message.open({
+                duration: 1,
+                type: 'success',
+                content: 'You tagged the job as completed',
+                className: 'cvat-annotation-job-finished-success',
             });
-        } else if ([Actions.REQUEST_REVIEW].includes(copyParams.key as Actions)) {
-            checkUnsavedChanges(copyParams);
-        } else if (copyParams.key === Actions.FINISH_JOB) {
+        }));
+    }, []);
+
+    const openTask = useCallback(() => {
+        history.push(`/tasks/${jobInstance.taskId}`);
+    }, [jobInstance.taskId]);
+
+    const uploadAnnotations = useCallback(() => {
+        dispatch(importActions.openImportDatasetModal(jobInstance));
+    }, [jobInstance]);
+
+    const changeState = useCallback((state: JobState) => {
+        dispatch(updateJobAsync(jobInstance, { state })).then(() => {
+            message.info('Job state updated', 2);
+        });
+    }, [jobInstance]);
+
+    const changeJobState = useCallback((state: JobState) => () => {
+        Modal.confirm({
+            title: 'Would you like to update current job state?',
+            content: `Job state will be switched to "${state}"`,
+            okText: 'Continue',
+            cancelText: 'Cancel',
+            className: 'cvat-modal-content-change-job-state',
+            onOk: () => changeState(state),
+        });
+    }, [changeState]);
+
+    const computeClassName = (menuItemState: string): string => {
+        if (menuItemState === jobState) return 'cvat-submenu-current-job-state-item';
+        return '';
+    };
+
+    const menuItems: [NonNullable<MenuProps['items']>[0], number][] = [];
+
+    menuItems.push([{
+        key: Actions.LOAD_JOB_ANNO,
+        label: 'Upload annotations',
+        onClick: uploadAnnotations,
+    }, 10]);
+
+    menuItems.push([{
+        key: Actions.EXPORT_JOB_DATASET,
+        label: 'Export job dataset',
+        onClick: exportDataset,
+    }, 20]);
+
+    menuItems.push([{
+        key: Actions.REMOVE_ANNOTATIONS,
+        label: 'Remove annotations',
+        onClick: () => setRemoveAnnotationsConfirmOpen(true),
+    }, 30]);
+
+    menuItems.push([{
+        key: Actions.RUN_ACTIONS,
+        label: 'Run actions',
+        onClick: () => {
+            openAnnotationsActionModal();
+        },
+    }, 40]);
+
+    menuItems.push([{
+        key: Actions.OPEN_TASK,
+        label: 'Open the task',
+        onClick: openTask,
+    }, 50]);
+
+    menuItems.push([{
+        key: 'job-state-submenu',
+        popupClassName: 'cvat-annotation-menu-job-state-submenu',
+        label: 'Change job state',
+        children: [{
+            key: `state:${JobState.NEW}`,
+            label: JobState.NEW,
+            className: computeClassName(JobState.NEW),
+            onClick: changeJobState(JobState.NEW),
+        }, {
+            key: `state:${JobState.IN_PROGRESS}`,
+            label: JobState.IN_PROGRESS,
+            className: computeClassName(JobState.IN_PROGRESS),
+            onClick: changeJobState(JobState.IN_PROGRESS),
+        }, {
+            key: `state:${JobState.REJECTED}`,
+            label: JobState.REJECTED,
+            className: computeClassName(JobState.REJECTED),
+            onClick: changeJobState(JobState.REJECTED),
+        }, {
+            key: `state:${JobState.COMPLETED}`,
+            label: JobState.COMPLETED,
+            className: computeClassName(JobState.COMPLETED),
+            onClick: changeJobState(JobState.COMPLETED),
+        }],
+    }, 60]);
+
+    menuItems.push([{
+        key: Actions.FINISH_JOB,
+        label: 'Finish the job',
+        onClick: () => {
             Modal.confirm({
-                title: 'The job status is going to be switched',
-                content: 'Status will be changed to "completed". Would you like to continue?',
+                title: 'Would you like to finish the job?',
+                content: 'It will save annotations and set the job state to "completed"',
                 okText: 'Continue',
                 cancelText: 'Cancel',
                 className: 'cvat-modal-content-finish-job',
-                onOk: () => {
-                    checkUnsavedChanges(copyParams);
-                },
+                onOk: finishJob,
             });
-        } else if (copyParams.key === Actions.RENEW_JOB) {
-            Modal.confirm({
-                title: 'The job status is going to be switched',
-                content: 'Status will be changed to "annotations". Would you like to continue?',
-                okText: 'Continue',
-                cancelText: 'Cancel',
-                className: 'cvat-modal-content-renew-job',
-                onOk: () => {
-                    onClickMenu(copyParams);
-                },
-            });
-        } else {
-            onClickMenu(copyParams);
-        }
-    }
+        },
+    }, 70]);
+
+    menuItems.push(
+        ...pluginActions.map(({ component: Component, weight }, index) => {
+            const menuItem = Component({ key: index, targetProps: { jobInstance } });
+            return [menuItem, weight] as [NonNullable<MenuProps['items']>[0], number];
+        }),
+    );
+
+    const sortedMenuItems = [...menuItems].sort((menuItem1, menuItem2) => menuItem1[1] - menuItem2[1]);
+    const finalMenuItems = sortedMenuItems.map((menuItem) => menuItem[0]);
 
     return (
-        <Menu onClick={onClickMenuWrapper} className='cvat-annotation-menu' selectable={false}>
-            {DumpSubmenu({
-                taskMode,
-                dumpers,
-                dumpActivities,
-                menuKey: Actions.DUMP_TASK_ANNO,
-                taskDimension: jobInstance.task.dimension,
-            })}
-            {LoadSubmenu({
-                loaders,
-                loadActivity,
-                onFileUpload: (file: File): void => {
-                    onClickMenuWrapper(null, file);
-                },
-                menuKey: Actions.LOAD_JOB_ANNO,
-                taskDimension: jobInstance.task.dimension,
-            })}
-            {ExportSubmenu({
-                exporters: dumpers,
-                exportActivities,
-                menuKey: Actions.EXPORT_TASK_DATASET,
-                taskDimension: jobInstance.task.dimension,
-            })}
-
-            <Menu.Item key={Actions.REMOVE_ANNO}>Remove annotations</Menu.Item>
-            <Menu.Item key={Actions.OPEN_TASK}>
-                <a href={`/tasks/${taskID}`} onClick={(e: React.MouseEvent) => e.preventDefault()}>
-                    Open the task
-                </a>
-            </Menu.Item>
-            {jobStatus === 'annotation' && <Menu.Item key={Actions.REQUEST_REVIEW}>Request a review</Menu.Item>}
-            {jobStatus === 'annotation' && <Menu.Item key={Actions.FINISH_JOB}>Finish the job</Menu.Item>}
-            {jobStatus === 'validation' && isReviewer && (
-                <Menu.Item key={Actions.SUBMIT_REVIEW}>Submit the review</Menu.Item>
-            )}
-            {jobStatus === 'completed' && <Menu.Item key={Actions.RENEW_JOB}>Renew the job</Menu.Item>}
-        </Menu>
+        <>
+            <RemoveAnnotationsConfirmComponent
+                open={removeAnnotationsConfirmOpen}
+                stopFrame={stopFrame}
+                onClose={() => setRemoveAnnotationsConfirmOpen(false)}
+                onRemove={(removeFrom, removeUpTo, removeOnlyKeyframes) => {
+                    dispatch(removeAnnotationsAsyncAction(removeFrom, removeUpTo, removeOnlyKeyframes));
+                }}
+            />
+            <Dropdown
+                trigger={['click']}
+                destroyPopupOnHide
+                menu={{
+                    items: finalMenuItems,
+                    triggerSubMenuAction: 'click',
+                    className: 'cvat-annotation-menu',
+                }}
+            >
+                <Button type='link' className='cvat-annotation-header-menu-button cvat-annotation-header-button'>
+                    <Icon component={MainMenuIcon} />
+                    Menu
+                </Button>
+            </Dropdown>
+        </>
     );
 }
+
+export default React.memo(AnnotationMenuComponent);

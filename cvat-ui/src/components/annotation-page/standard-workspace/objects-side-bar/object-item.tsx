@@ -1,101 +1,119 @@
-// Copyright (C) 2020 Intel Corporation
+// Copyright (C) 2021-2022 Intel Corporation
+// Copyright (C) CVAT.ai Corporation
 //
 // SPDX-License-Identifier: MIT
 
-import React from 'react';
+import React, { useCallback } from 'react';
+import Text from 'antd/lib/typography/Text';
+import Collapse from 'antd/lib/collapse';
 
 import ObjectButtonsContainer from 'containers/annotation-page/standard-workspace/objects-side-bar/object-buttons';
-import { ObjectType, ShapeType, ColorBy } from 'reducers/interfaces';
-import ItemDetails, { attrValuesAreEqual } from './object-item-details';
+import ItemDetailsContainer from 'containers/annotation-page/standard-workspace/objects-side-bar/object-item-details';
+import { ColorBy } from 'reducers';
+import { ObjectType, ShapeType } from 'cvat-core-wrapper';
+import { isMultiSelectObjectModifierPressed } from 'utils/multi-selection';
+import type { OrientationAngle } from 'utils/change-object-orientation';
+import ObjectItemElementComponent from './object-item-element';
 import ItemBasics from './object-item-basics';
+
+const INTERACTIVE_ELEMENT_SELECTOR = 'a, button, input, textarea, [role="button"], .ant-select, .anticon';
 
 interface Props {
     normalizedKeyMap: Record<string, string>;
-    readonly: boolean;
     activated: boolean;
+    multiSelected: boolean;
+    selectionActive: boolean;
+    multiSelectionSupported: boolean;
     objectType: ObjectType;
     shapeType: ShapeType;
     clientID: number;
-    serverID: number | undefined;
+    serverID: number | null;
     labelID: number;
+    isGroundTruth: boolean;
     locked: boolean;
-    attrValues: Record<number, string>;
+    elements: number[];
     color: string;
     colorBy: ColorBy;
-
     labels: any[];
     attributes: any[];
-    collapsed: boolean;
-
-    activate(): void;
+    jobInstance: any;
+    zLayerDragProps?: React.HTMLAttributes<HTMLElement>;
+    zLayerDragging?: boolean;
+    partsExpanded?: boolean;
+    onPartsExpandedChange?(clientID: number, expanded: boolean): void;
+    zOrder: number;
+    activate(activeElementID?: number): void;
+    activateSingle(): void;
+    toggleSelection(): void;
+    selectRange(): void;
+    focusAndExpand(): void;
     copy(): void;
     propagate(): void;
-    createURL(): void;
     switchOrientation(): void;
+    changeOrientation(degrees: OrientationAngle): void;
+    createURL(): void;
     toBackground(): void;
     toForeground(): void;
+    toOneLayerBackward(): void;
+    toOneLayerForward(): void;
+    toSpecificLayer(zOrder: number): void;
     remove(): void;
     changeLabel(label: any): void;
-    changeAttribute(attrID: number, value: string): void;
     changeColor(color: string): void;
-    collapse(): void;
     resetCuboidPerspective(): void;
-    activateTracking(): void;
-}
-
-function objectItemsAreEqual(prevProps: Props, nextProps: Props): boolean {
-    return (
-        nextProps.activated === prevProps.activated &&
-        nextProps.readonly === prevProps.readonly &&
-        nextProps.locked === prevProps.locked &&
-        nextProps.labelID === prevProps.labelID &&
-        nextProps.color === prevProps.color &&
-        nextProps.clientID === prevProps.clientID &&
-        nextProps.serverID === prevProps.serverID &&
-        nextProps.objectType === prevProps.objectType &&
-        nextProps.shapeType === prevProps.shapeType &&
-        nextProps.collapsed === prevProps.collapsed &&
-        nextProps.labels === prevProps.labels &&
-        nextProps.attributes === prevProps.attributes &&
-        nextProps.normalizedKeyMap === prevProps.normalizedKeyMap &&
-        nextProps.colorBy === prevProps.colorBy &&
-        attrValuesAreEqual(nextProps.attrValues, prevProps.attrValues)
-    );
+    runAnnotationAction(): void;
+    edit(): void;
+    slice(): void;
+    simplify(): void;
 }
 
 function ObjectItemComponent(props: Props): JSX.Element {
     const {
         activated,
-        readonly,
+        multiSelected,
+        selectionActive,
+        multiSelectionSupported,
         objectType,
         shapeType,
         clientID,
         serverID,
         locked,
-        attrValues,
         labelID,
         color,
         colorBy,
-
-        attributes,
+        elements,
+        partsExpanded,
+        onPartsExpandedChange,
         labels,
-        collapsed,
+        zLayerDragProps,
+        zLayerDragging,
+        zOrder,
         normalizedKeyMap,
-
+        isGroundTruth,
         activate,
+        activateSingle,
+        toggleSelection,
+        selectRange,
+        focusAndExpand,
         copy,
         propagate,
         createURL,
         switchOrientation,
+        changeOrientation,
         toBackground,
         toForeground,
+        toOneLayerForward,
+        toOneLayerBackward,
+        toSpecificLayer,
         remove,
         changeLabel,
-        changeAttribute,
         changeColor,
-        collapse,
         resetCuboidPerspective,
-        activateTracking,
+        runAnnotationAction,
+        edit,
+        slice,
+        simplify,
+        jobInstance,
     } = props;
 
     const type =
@@ -103,21 +121,76 @@ function ObjectItemComponent(props: Props): JSX.Element {
             ObjectType.TAG.toUpperCase() :
             `${shapeType.toUpperCase()} ${objectType.toUpperCase()}`;
 
-    const className = !activated ?
-        'cvat-objects-sidebar-state-item' :
-        'cvat-objects-sidebar-state-item cvat-objects-sidebar-state-active-item';
+    let className = !activated ?
+        `cvat-objects-sidebar-state-item${zLayerDragging ? ' cvat-objects-sidebar-state-item-dragging' : ''}` :
+        `cvat-objects-sidebar-state-item cvat-objects-sidebar-state-active-item${
+            zLayerDragging ? ' cvat-objects-sidebar-state-item-dragging' : ''
+        }`;
+    if (multiSelected) {
+        className += ' cvat-objects-sidebar-state-item-multi-selected';
+    }
 
+    const activateState = useCallback((event: React.MouseEvent): void => {
+        if (!selectionActive && !(multiSelectionSupported && isMultiSelectObjectModifierPressed(event))) {
+            activate();
+        }
+    }, [activate, multiSelectionSupported, selectionActive]);
+    const activateAfterElement = useCallback((): void => activate(), [activate]);
+
+    const onMouseDown = useCallback((event: React.MouseEvent): void => {
+        if (event.button === 0) {
+            const interactiveElement = (event.target as Element).closest(INTERACTIVE_ELEMENT_SELECTOR);
+            const rangeModifier = multiSelectionSupported && event.shiftKey &&
+                !event.ctrlKey && !event.altKey && !event.metaKey;
+            const objectModifier = multiSelectionSupported && isMultiSelectObjectModifierPressed(event);
+            if (!interactiveElement && objectType === ObjectType.TAG && (rangeModifier || objectModifier)) {
+                event.preventDefault();
+                event.stopPropagation();
+            } else if (!interactiveElement && rangeModifier) {
+                event.preventDefault();
+                event.stopPropagation();
+                selectRange();
+            } else if (!interactiveElement && objectModifier) {
+                event.preventDefault();
+                event.stopPropagation();
+                toggleSelection();
+            } else if (!interactiveElement && selectionActive) {
+                event.preventDefault();
+                event.stopPropagation();
+                activateSingle();
+            }
+        }
+    }, [activateSingle, multiSelectionSupported, objectType, selectRange, selectionActive, toggleSelection]);
+
+    const onKeyDown = useCallback((event: React.KeyboardEvent): void => {
+        if (multiSelectionSupported && ['Enter', ' '].includes(event.key) &&
+            isMultiSelectObjectModifierPressed(event)) {
+            event.preventDefault();
+            event.stopPropagation();
+            if (objectType !== ObjectType.TAG) {
+                toggleSelection();
+            }
+        }
+    }, [multiSelectionSupported, objectType, toggleSelection]);
+
+    const activeParts = partsExpanded ? ['elements'] : [];
     return (
         <div style={{ display: 'flex', marginBottom: '1px' }}>
-            <div className='cvat-objects-sidebar-state-item-color' style={{ background: `${color}` }} />
             <div
-                onMouseEnter={activate}
+                {...zLayerDragProps}
+                role='option'
+                aria-selected={multiSelected}
+                tabIndex={0}
+                onMouseEnter={activateState}
+                onMouseDown={onMouseDown}
+                onKeyDown={onKeyDown}
+                onDoubleClick={focusAndExpand}
                 id={`cvat-objects-sidebar-state-item-${clientID}`}
-                className={className}
-                style={{ backgroundColor: `${color}88` }}
+                className={`${className}${zLayerDragProps ? ' cvat-objects-sidebar-state-item-draggable' : ''}`}
+                style={{ '--state-item-background': `${color}` } as React.CSSProperties}
             >
                 <ItemBasics
-                    readonly={readonly}
+                    jobInstance={jobInstance}
                     serverID={serverID}
                     clientID={clientID}
                     labelID={labelID}
@@ -128,13 +201,19 @@ function ObjectItemComponent(props: Props): JSX.Element {
                     colorBy={colorBy}
                     type={type}
                     locked={locked}
+                    isGroundTruth={isGroundTruth}
                     copyShortcut={normalizedKeyMap.COPY_SHAPE}
                     pasteShortcut={normalizedKeyMap.PASTE_SHAPE}
                     propagateShortcut={normalizedKeyMap.PROPAGATE_OBJECT}
                     toBackgroundShortcut={normalizedKeyMap.TO_BACKGROUND}
                     toForegroundShortcut={normalizedKeyMap.TO_FOREGROUND}
-                    removeShortcut={normalizedKeyMap.DELETE_OBJECT}
+                    toOneLayerBackwardShortcut={normalizedKeyMap.TO_ONE_LAYER_BACKWARD}
+                    toOneLayerForwardShortcut={normalizedKeyMap.TO_ONE_LAYER_FORWARD}
+                    zOrder={zOrder}
+                    removeShortcut={normalizedKeyMap.DELETE_OBJECT_STANDARD_WORKSPACE}
                     changeColorShortcut={normalizedKeyMap.CHANGE_OBJECT_COLOR}
+                    sliceShortcut={normalizedKeyMap.SWITCH_SLICE_MODE}
+                    runAnnotationsActionShortcut={normalizedKeyMap.RUN_ANNOTATIONS_ACTION}
                     changeLabel={changeLabel}
                     changeColor={changeColor}
                     copy={copy}
@@ -142,20 +221,41 @@ function ObjectItemComponent(props: Props): JSX.Element {
                     propagate={propagate}
                     createURL={createURL}
                     switchOrientation={switchOrientation}
+                    changeOrientation={changeOrientation}
                     toBackground={toBackground}
                     toForeground={toForeground}
+                    toOneLayerBackward={toOneLayerBackward}
+                    toOneLayerForward={toOneLayerForward}
+                    toSpecificLayer={toSpecificLayer}
                     resetCuboidPerspective={resetCuboidPerspective}
-                    activateTracking={activateTracking}
+                    edit={edit}
+                    slice={slice}
+                    simplify={simplify}
+                    runAnnotationAction={runAnnotationAction}
                 />
-                <ObjectButtonsContainer readonly={readonly} clientID={clientID} />
-                {!!attributes.length && (
-                    <ItemDetails
-                        readonly={readonly}
-                        collapsed={collapsed}
-                        attributes={attributes}
-                        values={attrValues}
-                        collapse={collapse}
-                        changeAttribute={changeAttribute}
+                <ObjectButtonsContainer clientID={clientID} />
+                <ItemDetailsContainer
+                    readonly={locked}
+                    clientID={clientID}
+                    parentID={null}
+                />
+                {!!elements.length && (
+                    <Collapse
+                        className='cvat-objects-sidebar-state-item-elements-collapse'
+                        activeKey={partsExpanded === undefined ? undefined : activeParts}
+                        onChange={(keys): void => onPartsExpandedChange?.(clientID, keys.includes('elements'))}
+                        items={[{
+                            key: 'elements',
+                            label: <Text style={{ fontSize: 10 }} type='secondary'>PARTS</Text>,
+                            children: elements.map((element: number) => (
+                                <ObjectItemElementComponent
+                                    key={element}
+                                    parentID={clientID}
+                                    clientID={element}
+                                    onMouseLeave={activateAfterElement}
+                                />
+                            )),
+                        }]}
                     />
                 )}
             </div>
@@ -163,4 +263,4 @@ function ObjectItemComponent(props: Props): JSX.Element {
     );
 }
 
-export default React.memo(ObjectItemComponent, objectItemsAreEqual);
+export default React.memo(ObjectItemComponent);

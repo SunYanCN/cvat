@@ -1,58 +1,268 @@
-// Copyright (C) 2020-2021 Intel Corporation
+// Copyright (C) 2020-2022 Intel Corporation
+// Copyright (C) CVAT.ai Corporation
 //
 // SPDX-License-Identifier: MIT
 
 import React from 'react';
+
 import { connect } from 'react-redux';
-import GlobalHotKeys, { KeyMap } from 'utils/mousetrap-react';
+import message from 'antd/lib/message';
+import GlobalHotKeys, { Handlers, KeyMap } from 'utils/mousetrap-react';
 
 import ObjectsListComponent from 'components/annotation-page/standard-workspace/objects-side-bar/objects-list';
 import {
     updateAnnotationsAsync,
-    removeObjectAsync,
+    updateAnnotationsBatchAsync,
     changeFrameAsync,
     collapseObjectItems,
     changeGroupColorAsync,
     copyShape as copyShapeAction,
-    propagateObject as propagateObjectAction,
+    copySelection as copySelectionAction,
+    switchPropagateVisibility as switchPropagateVisibilityAction,
+    switchSimplifyVisibility as switchSimplifyVisibilityAction,
+    removeObject as removeObjectAction,
+    removeSelectionAsync,
+    fetchAnnotationsAsync,
+    changeHideActiveObjectAsync,
+    updateLayerAsync,
+    compactLayersAsync,
+    switchZLayer,
+    toggleZLayersVisibility,
+    selectObjectsAsync,
 } from 'actions/annotation-actions';
-import { Canvas } from 'cvat-canvas-wrapper';
 import {
-    CombinedState, StatesOrdering, ObjectType, ColorBy,
-} from 'reducers/interfaces';
-
-interface OwnProps {
-    readonly: boolean;
-}
+    changeShowGroundTruth as changeShowGroundTruthAction,
+} from 'actions/settings-actions';
+import { isAbleToChangeFrame } from 'utils/annotation';
+import getHiddenZLayers from 'utils/get-hidden-z-layers';
+import {
+    CombinedState, StatesOrdering, ColorBy, Workspace, isMultiSelectionSupported,
+    ActiveControl,
+} from 'reducers';
+import { ObjectState, ObjectType, ShapeType } from 'cvat-core-wrapper';
+import { RenderData } from 'cvat-canvas-wrapper';
+import { filterAnnotations } from 'utils/filter-annotations';
+import { registerComponentShortcuts } from 'actions/shortcuts-actions';
+import { ShortcutScope } from 'utils/enums';
+import { subKeyMap } from 'utils/component-subkeymap';
+import {
+    type LayerPlacement,
+    type LayerMoveSource,
+    isLayerState,
+} from 'components/annotation-page/standard-workspace/objects-side-bar/drag-and-drop';
+import { openAnnotationsActionModal } from 'components/annotation-page/annotations-actions/annotations-actions-modal';
+import { OBJECTS_SIDEBAR_OPEN_Z_LAYER_EVENT } from 'utils/objects-sidebar';
+import {
+    type SelectionToggleProperty,
+    getSelectedStates,
+    getSelectionToggleState,
+    prepareSelectionZOrder,
+    prepareSelectionToggle,
+} from 'utils/multi-selection';
 
 interface StateToProps {
     jobInstance: any;
     frameNumber: any;
-    listHeight: number;
     statesHidden: boolean;
     statesLocked: boolean;
     statesCollapsedAll: boolean;
     collapsedStates: Record<number, boolean>;
-    objectStates: any[];
+    objectStates: ObjectState[];
     annotationsFilters: any[];
+    renderData: RenderData;
     colors: string[];
     colorBy: ColorBy;
     activatedStateID: number | null;
+    activatedElementID: number | null;
+    selectedStatesID: number[];
     minZLayer: number;
     maxZLayer: number;
+    currentZLayer: number;
+    hiddenZLayers: Set<number>;
     keyMap: KeyMap;
     normalizedKeyMap: Record<string, string>;
-    canvasInstance: Canvas;
+    showGroundTruth: boolean;
+    workspace: Workspace;
+    editedState: ObjectState | null,
+    activeControl: ActiveControl,
+    activeObjectHidden: boolean,
 }
 
 interface DispatchToProps {
-    updateAnnotations(states: any[]): void;
-    collapseStates(states: any[], value: boolean): void;
-    removeObject: (sessionInstance: any, objectState: any, force: boolean) => void;
-    copyShape: (objectState: any) => void;
-    propagateObject: (objectState: any) => void;
-    changeFrame(frame: number): void;
-    changeGroupColor(group: number, color: string): void;
+    updateAnnotations(...args: Parameters<typeof updateAnnotationsAsync>): void;
+    updateAnnotationsBatch(...args: Parameters<typeof updateAnnotationsBatchAsync>): void;
+    collapseStates(...args: Parameters<typeof collapseObjectItems>): void;
+    removeObject(...args: Parameters<typeof removeObjectAction>): void;
+    removeSelection(...args: Parameters<typeof removeSelectionAsync>): void;
+    copyShape(...args: Parameters<typeof copyShapeAction>): void;
+    copySelection(...args: Parameters<typeof copySelectionAction>): void;
+    switchPropagateVisibility(...args: Parameters<typeof switchPropagateVisibilityAction>): void;
+    switchSimplifyVisibility(...args: Parameters<typeof switchSimplifyVisibilityAction>): void;
+    changeFrame(...args: Parameters<typeof changeFrameAsync>): void;
+    changeGroupColor(...args: Parameters<typeof changeGroupColorAsync>): void;
+    changeShowGroundTruth(...args: Parameters<typeof changeShowGroundTruthAction>): void;
+    changeHideEditedState(...args: Parameters<typeof changeHideActiveObjectAsync>): void;
+    updateLayer(...args: Parameters<typeof updateLayerAsync>): void;
+    compactLayers(...args: Parameters<typeof compactLayersAsync>): void;
+    selectLayer(...args: Parameters<typeof switchZLayer>): void;
+    toggleLayersVisibility(...args: Parameters<typeof toggleZLayersVisibility>): void;
+    selectObjects(...args: Parameters<typeof selectObjectsAsync>): void;
+}
+
+const componentShortcuts = {
+    SWITCH_ALL_LOCK: {
+        name: 'Lock/unlock all objects',
+        description: 'Change locked state for all objects in the side bar',
+        sequences: ['t l'],
+        scope: ShortcutScope.OBJECTS_SIDEBAR,
+    },
+    SWITCH_LOCK: {
+        name: 'Lock/unlock objects',
+        description: 'Change locked state for selected objects or an active object',
+        sequences: ['l'],
+        scope: ShortcutScope.OBJECTS_SIDEBAR,
+    },
+    SWITCH_ALL_HIDDEN: {
+        name: 'Hide/show all objects',
+        description: 'Change hidden state for objects in the side bar',
+        sequences: ['t h'],
+        scope: ShortcutScope.OBJECTS_SIDEBAR,
+    },
+    SWITCH_HIDDEN: {
+        name: 'Hide/show objects',
+        description: 'Change hidden state for selected objects or an active object',
+        sequences: ['h'],
+        scope: ShortcutScope.OBJECTS_SIDEBAR,
+    },
+    SWITCH_OCCLUDED: {
+        name: 'Switch occluded',
+        description: 'Change occluded property for selected objects or an active object',
+        sequences: ['q', '/'],
+        scope: ShortcutScope.OBJECTS_SIDEBAR,
+    },
+    SWITCH_PINNED: {
+        name: 'Switch pinned property',
+        description: 'Change pinned state for selected objects or an active object',
+        sequences: ['p'],
+        scope: ShortcutScope.OBJECTS_SIDEBAR,
+    },
+    SWITCH_KEYFRAME: {
+        name: 'Switch keyframe',
+        description: 'Change keyframe property for an active track',
+        sequences: ['k'],
+        scope: ShortcutScope.OBJECTS_SIDEBAR,
+    },
+    SWITCH_OUTSIDE: {
+        name: 'Switch outside',
+        description: 'Change outside property for an active track',
+        sequences: ['o'],
+        scope: ShortcutScope.OBJECTS_SIDEBAR,
+    },
+    DELETE_OBJECT_STANDARD_WORKSPACE: {
+        name: 'Delete object',
+        description: 'Delete an active object. Use shift to force delete of locked objects',
+        sequences: ['del', 'backspace', 'shift+del', 'shift+backspace'],
+        scope: ShortcutScope.OBJECTS_SIDEBAR,
+    },
+    TO_BACKGROUND: {
+        name: 'Move to background',
+        description: 'Move an active object to the newly created background layer (decrease z-order value)',
+        sequences: ['-', '_'],
+        scope: ShortcutScope.OBJECTS_SIDEBAR,
+    },
+    TO_FOREGROUND: {
+        name: 'Move to foreground',
+        description: 'Move an active object to the newly created foreground layer (increase z-order value)',
+        sequences: ['+', '='],
+        scope: ShortcutScope.OBJECTS_SIDEBAR,
+    },
+    TO_ONE_LAYER_BACKWARD: {
+        name: 'Move one layer backward',
+        description: 'Move an active object one layer backward (decrease z-order value)',
+        sequences: [],
+        scope: ShortcutScope.OBJECTS_SIDEBAR,
+    },
+    TO_ONE_LAYER_FORWARD: {
+        name: 'Move one layer forward',
+        description: 'Move an active object one layer forward (increase z-order value)',
+        sequences: [],
+        scope: ShortcutScope.OBJECTS_SIDEBAR,
+    },
+    COPY_SHAPE: {
+        name: 'Copy shape',
+        description: 'Copy shape to CVAT internal clipboard',
+        sequences: ['ctrl+c', 'command+c'],
+        scope: ShortcutScope.OBJECTS_SIDEBAR,
+    },
+    RUN_ANNOTATIONS_ACTION: {
+        name: 'Run annotations action',
+        description: 'Opens a dialog with annotations actions',
+        sequences: ['ctrl+e'],
+        scope: ShortcutScope.OBJECTS_SIDEBAR,
+    },
+    PROPAGATE_OBJECT: {
+        name: 'Propagate object',
+        description: 'Make a copy of the object on the following frames',
+        sequences: ['ctrl+b'],
+        scope: ShortcutScope.OBJECTS_SIDEBAR,
+    },
+    NEXT_KEY_FRAME: {
+        name: 'Next keyframe',
+        description: 'Go to the next keyframe of an active track',
+        sequences: ['r'],
+        scope: ShortcutScope.OBJECTS_SIDEBAR,
+    },
+    PREV_KEY_FRAME: {
+        name: 'Previous keyframe',
+        description: 'Go to the previous keyframe of an active track',
+        sequences: ['e'],
+        scope: ShortcutScope.OBJECTS_SIDEBAR,
+    },
+    CHANGE_OBJECT_COLOR: {
+        name: 'Change color',
+        description: 'Set the next color for an activated shape',
+        sequences: ['enter'],
+        scope: ShortcutScope.OBJECTS_SIDEBAR,
+    },
+    SIMPLIFY_POLYGON: {
+        name: 'Simplify polygon',
+        description: 'Activate simplification mode for the selected polygon or polyline',
+        sequences: [],
+        scope: ShortcutScope.OBJECTS_SIDEBAR,
+    },
+    SELECT_ALL_OBJECTS: {
+        name: 'Select all objects',
+        description: 'Add all objects visible on the canvas to the selection',
+        sequences: ['mod+a'],
+        scope: ShortcutScope.OBJECTS_SIDEBAR,
+    },
+};
+
+registerComponentShortcuts(componentShortcuts);
+
+function withDeleteKeyAliases(keyMap: KeyMap): KeyMap {
+    const deleteShortcut = keyMap.DELETE_OBJECT_STANDARD_WORKSPACE;
+    if (!deleteShortcut) {
+        return keyMap;
+    }
+
+    const sequences = new Set(deleteShortcut.sequences);
+    deleteShortcut.sequences.forEach((sequence) => {
+        const keys = sequence.split('+');
+        const key = keys.at(-1);
+        if (key === 'del' || key === 'backspace') {
+            keys[keys.length - 1] = key === 'del' ? 'backspace' : 'del';
+            sequences.add(keys.join('+'));
+        }
+    });
+
+    return {
+        ...keyMap,
+        DELETE_OBJECT_STANDARD_WORKSPACE: {
+            ...deleteShortcut,
+            sequences: [...sequences],
+        },
+    };
 }
 
 function mapStateToProps(state: CombinedState): StateToProps {
@@ -61,21 +271,29 @@ function mapStateToProps(state: CombinedState): StateToProps {
             annotations: {
                 states: objectStates,
                 filters: annotationsFilters,
+                renderData,
                 collapsed,
                 collapsedAll,
                 activatedStateID,
-                zLayer: { min: minZLayer, max: maxZLayer },
+                activatedElementID,
+                selectedStatesID,
+                zLayer: {
+                    min: minZLayer, max: maxZLayer, cur: currentZLayer,
+                },
             },
             job: { instance: jobInstance },
             player: {
                 frame: { number: frameNumber },
             },
-            canvas: { instance: canvasInstance },
-            tabContentHeight: listHeight,
+            canvas: {
+                activeControl, activeObjectHidden,
+            },
+            editing: { objectState: editedState },
             colors,
+            workspace,
         },
         settings: {
-            shapes: { colorBy },
+            shapes: { colorBy, showGroundTruth },
         },
         shortcuts: { keyMap, normalizedKeyMap },
     } = state;
@@ -83,18 +301,23 @@ function mapStateToProps(state: CombinedState): StateToProps {
     let statesHidden = true;
     let statesLocked = true;
 
-    objectStates.forEach((objectState: any) => {
+    objectStates.forEach((objectState: ObjectState) => {
         const { lock } = objectState;
         if (!lock) {
-            if (objectState.objectType !== ObjectType.TAG) {
-                statesHidden = statesHidden && objectState.hidden;
+            if (objectState.objectType === ObjectType.SHAPE || objectState.objectType === ObjectType.TRACK) {
+                if (objectState.shapeType === ShapeType.SKELETON) {
+                    objectState.elements.forEach((element: ObjectState) => {
+                        statesHidden = statesHidden && (element.lock || element.hidden);
+                    });
+                } else {
+                    statesHidden = statesHidden && objectState.hidden;
+                }
             }
             statesLocked = statesLocked && objectState.lock;
         }
     });
 
     return {
-        listHeight,
         statesHidden,
         statesLocked,
         statesCollapsedAll: collapsedAll,
@@ -103,96 +326,182 @@ function mapStateToProps(state: CombinedState): StateToProps {
         frameNumber,
         jobInstance,
         annotationsFilters,
+        renderData,
         colors,
         colorBy,
         activatedStateID,
+        activatedElementID,
+        selectedStatesID,
         minZLayer,
         maxZLayer,
+        currentZLayer,
+        hiddenZLayers: getHiddenZLayers(state),
         keyMap,
         normalizedKeyMap,
-        canvasInstance,
+        showGroundTruth,
+        workspace,
+        editedState,
+        activeControl,
+        activeObjectHidden,
     };
 }
 
 function mapDispatchToProps(dispatch: any): DispatchToProps {
     return {
-        updateAnnotations(states: any[]): void {
-            dispatch(updateAnnotationsAsync(states));
+        updateAnnotations(...args: Parameters<typeof updateAnnotationsAsync>): void {
+            dispatch(updateAnnotationsAsync(...args));
         },
-        collapseStates(states: any[], collapsed: boolean): void {
-            dispatch(collapseObjectItems(states, collapsed));
+        updateAnnotationsBatch(...args: Parameters<typeof updateAnnotationsBatchAsync>): void {
+            dispatch(updateAnnotationsBatchAsync(...args));
         },
-        removeObject(sessionInstance: any, objectState: any, force: boolean): void {
-            dispatch(removeObjectAsync(sessionInstance, objectState, force));
+        collapseStates(...args: Parameters<typeof collapseObjectItems>): void {
+            dispatch(collapseObjectItems(...args));
         },
-        copyShape(objectState: any): void {
-            dispatch(copyShapeAction(objectState));
+        removeObject(...args: Parameters<typeof removeObjectAction>): void {
+            dispatch(removeObjectAction(...args));
         },
-        propagateObject(objectState: any): void {
-            dispatch(propagateObjectAction(objectState));
+        removeSelection(...args: Parameters<typeof removeSelectionAsync>): void {
+            dispatch(removeSelectionAsync(...args));
         },
-        changeFrame(frame: number): void {
-            dispatch(changeFrameAsync(frame));
+        copySelection(...args: Parameters<typeof copySelectionAction>): void {
+            dispatch(copySelectionAction(...args));
         },
-        changeGroupColor(group: number, color: string): void {
-            dispatch(changeGroupColorAsync(group, color));
+        copyShape(...args: Parameters<typeof copyShapeAction>): void {
+            dispatch(copyShapeAction(...args));
+        },
+        switchPropagateVisibility(...args: Parameters<typeof switchPropagateVisibilityAction>): void {
+            dispatch(switchPropagateVisibilityAction(...args));
+        },
+        switchSimplifyVisibility(...args: Parameters<typeof switchSimplifyVisibilityAction>): void {
+            dispatch(switchSimplifyVisibilityAction(...args));
+        },
+        changeFrame(...args: Parameters<typeof changeFrameAsync>): void {
+            dispatch(changeFrameAsync(...args));
+        },
+        changeGroupColor(...args: Parameters<typeof changeGroupColorAsync>): void {
+            dispatch(changeGroupColorAsync(...args));
+        },
+        changeShowGroundTruth(...args: Parameters<typeof changeShowGroundTruthAction>): void {
+            dispatch(changeShowGroundTruthAction(...args));
+            dispatch(fetchAnnotationsAsync());
+        },
+        changeHideEditedState(...args: Parameters<typeof changeHideActiveObjectAsync>): void {
+            dispatch(changeHideActiveObjectAsync(...args));
+        },
+        updateLayer(...args: Parameters<typeof updateLayerAsync>): void {
+            dispatch(updateLayerAsync(...args));
+        },
+        compactLayers(...args: Parameters<typeof compactLayersAsync>): void {
+            dispatch(compactLayersAsync(...args));
+        },
+        selectLayer(...args: Parameters<typeof switchZLayer>): void {
+            dispatch(switchZLayer(...args));
+        },
+        toggleLayersVisibility(...args: Parameters<typeof toggleZLayersVisibility>): void {
+            dispatch(toggleZLayersVisibility(...args));
+        },
+        selectObjects(...args: Parameters<typeof selectObjectsAsync>): void {
+            dispatch(selectObjectsAsync(...args));
         },
     };
 }
 
-function sortAndMap(objectStates: any[], ordering: StatesOrdering): number[] {
-    let sorted = [];
+function sortAndMap(objectStates: ObjectState[], ordering: StatesOrdering): number[] {
+    let sorted: ObjectState[] = [];
     if (ordering === StatesOrdering.ID_ASCENT) {
-        sorted = [...objectStates].sort((a: any, b: any): number => a.clientID - b.clientID);
+        sorted = [...objectStates].sort((a: ObjectState, b: ObjectState): number => (
+            (a.clientID ?? 0) - (b.clientID ?? 0)
+        ));
     } else if (ordering === StatesOrdering.ID_DESCENT) {
-        sorted = [...objectStates].sort((a: any, b: any): number => b.clientID - a.clientID);
+        sorted = [...objectStates].sort((a: ObjectState, b: ObjectState): number => (
+            (b.clientID ?? 0) - (a.clientID ?? 0)
+        ));
+    } else if (ordering === StatesOrdering.UPDATED) {
+        sorted = [...objectStates].sort((a: ObjectState, b: ObjectState): number => b.updated - a.updated);
+    } else if (ordering === StatesOrdering.LAYER) {
+        sorted = [...objectStates].sort((a: ObjectState, b: ObjectState): number => a.zOrder - b.zOrder);
+    } else if (ordering === StatesOrdering.LABEL_NAME) {
+        sorted = [...objectStates].sort((a: ObjectState, b: ObjectState): number => {
+            const labelComparison = a.label.name.localeCompare(b.label.name);
+            if (labelComparison !== 0) {
+                return labelComparison;
+            }
+            return (a.clientID ?? 0) - (b.clientID ?? 0);
+        });
     } else {
-        sorted = [...objectStates].sort((a: any, b: any): number => b.updated - a.updated);
+        sorted = [...objectStates];
     }
 
-    return sorted.map((state: any) => state.clientID);
+    return sorted.map((state: ObjectState) => state.clientID).filter((id): id is number => id !== null);
 }
 
-type Props = StateToProps & DispatchToProps & OwnProps;
+type Props = StateToProps & DispatchToProps;
 
 interface State {
     statesOrdering: StatesOrdering;
-    objectStates: any[];
+    objectStates: ObjectState[];
+    filteredStates: ObjectState[];
     sortedStatesID: number[];
 }
 
 class ObjectsListContainer extends React.PureComponent<Props, State> {
-    static defaultProps = {
-        readonly: false,
-    };
-
     public constructor(props: Props) {
         super(props);
         this.state = {
             statesOrdering: StatesOrdering.ID_ASCENT,
             objectStates: [],
+            filteredStates: [],
             sortedStatesID: [],
         };
     }
 
-    static getDerivedStateFromProps(props: Props, state: State): State | null {
-        if (props.objectStates === state.objectStates) {
-            return null;
-        }
-
-        return {
-            ...state,
-            objectStates: props.objectStates,
-            sortedStatesID: sortAndMap(props.objectStates, state.statesOrdering),
-        };
+    public componentDidMount(): void {
+        this.updateObjects();
+        window.addEventListener(OBJECTS_SIDEBAR_OPEN_Z_LAYER_EVENT, this.onOpenZLayerInSidebar);
     }
 
-    private onChangeStatesOrdering = (statesOrdering: StatesOrdering): void => {
+    public componentWillUnmount(): void {
+        window.removeEventListener(OBJECTS_SIDEBAR_OPEN_Z_LAYER_EVENT, this.onOpenZLayerInSidebar);
+    }
+
+    public componentDidUpdate(): void {
         const { objectStates } = this.props;
+        const { objectStates: prevObjectStates } = this.state;
+        if (objectStates !== prevObjectStates) {
+            this.updateObjects();
+        }
+    }
+
+    private updateObjects = (): void => {
+        const {
+            objectStates, frameNumber, workspace,
+        } = this.props;
+        const { statesOrdering } = this.state;
+        const filteredStates = filterAnnotations(objectStates, {
+            frame: frameNumber,
+            workspace,
+        });
+        this.setState({
+            objectStates,
+            filteredStates,
+            sortedStatesID: sortAndMap(filteredStates, statesOrdering),
+        });
+    };
+
+    private onChangeStatesOrdering = (statesOrdering: StatesOrdering): void => {
+        const { filteredStates, statesOrdering: currentStatesOrdering } = this.state;
+        if (statesOrdering === currentStatesOrdering) {
+            return;
+        }
+
         this.setState({
             statesOrdering,
-            sortedStatesID: sortAndMap(objectStates, statesOrdering),
+            sortedStatesID: sortAndMap(filteredStates, statesOrdering),
         });
+    };
+
+    private onOpenZLayerInSidebar = (): void => {
+        this.onChangeStatesOrdering(StatesOrdering.LAYER);
     };
 
     private onLockAllStates = (): void => {
@@ -202,6 +511,28 @@ class ObjectsListContainer extends React.PureComponent<Props, State> {
     private onUnlockAllStates = (): void => {
         this.lockAllStates(false);
     };
+
+    private switchSelectionProperty = (property: SelectionToggleProperty): void => {
+        const {
+            objectStates, selectedStatesID, updateAnnotationsBatch,
+        } = this.props;
+        const selectedStates = getSelectedStates(objectStates, selectedStatesID);
+        if (!selectedStates.length) return;
+        const { disabledReason } = getSelectionToggleState(selectedStates, property);
+        if (disabledReason) {
+            message.destroy();
+            message.warning(disabledReason);
+            return;
+        }
+
+        const statesToUpdate = prepareSelectionToggle(selectedStates, property);
+        updateAnnotationsBatch(statesToUpdate);
+    };
+
+    private switchSelectionLock = (): void => this.switchSelectionProperty('lock');
+    private switchSelectionPinned = (): void => this.switchSelectionProperty('pinned');
+    private switchSelectionHidden = (): void => this.switchSelectionProperty('hidden');
+    private switchSelectionOccluded = (): void => this.switchSelectionProperty('occluded');
 
     private onCollapseAllStates = (): void => {
         this.collapseAllStates(true);
@@ -219,34 +550,84 @@ class ObjectsListContainer extends React.PureComponent<Props, State> {
         this.hideAllStates(false);
     };
 
-    private lockAllStates(locked: boolean): void {
-        const { objectStates, updateAnnotations, readonly } = this.props;
+    private changeShowGroundTruth = (): void => {
+        const { showGroundTruth, changeShowGroundTruth } = this.props;
+        changeShowGroundTruth(!showGroundTruth);
+    };
 
-        if (!readonly) {
-            for (const objectState of objectStates) {
-                objectState.lock = locked;
-            }
+    private statesFromMoveSource(source: LayerMoveSource): ObjectState[] {
+        const { filteredStates } = this.state;
 
-            updateAnnotations(objectStates);
+        if ('clientID' in source) {
+            const objectState = filteredStates.find((state: ObjectState): boolean => (
+                state.clientID === source.clientID
+            ));
+            return objectState && isLayerState(objectState) ? [objectState] : [];
         }
+
+        return filteredStates.filter((state: ObjectState): boolean => (
+            isLayerState(state) && state.zOrder === source.zOrder
+        ));
+    }
+
+    private moveObjectsToLayer = (source: LayerMoveSource, targetZOrder: number): void => {
+        const { frameNumber, updateLayer } = this.props;
+        const statesToMove = this.statesFromMoveSource(source);
+
+        if (!statesToMove.length) {
+            return;
+        }
+
+        updateLayer(frameNumber, { exact: targetZOrder }, statesToMove);
+    };
+
+    private moveObjectsOnNewLayer = (source: LayerMoveSource, placement: LayerPlacement): void => {
+        const { frameNumber, updateLayer } = this.props;
+        const statesToMove = this.statesFromMoveSource(source);
+
+        if (!statesToMove.length) {
+            return;
+        }
+
+        updateLayer(frameNumber, placement, statesToMove);
+    };
+
+    private compactLayers = (): void => {
+        const { frameNumber, compactLayers } = this.props;
+        compactLayers(frameNumber);
+    };
+
+    private lockAllStates(locked: boolean): void {
+        const { updateAnnotations } = this.props;
+        const { filteredStates } = this.state;
+
+        for (const objectState of filteredStates) {
+            objectState.lock = locked;
+        }
+
+        updateAnnotations(filteredStates, true);
     }
 
     private hideAllStates(hidden: boolean): void {
-        const { objectStates, updateAnnotations, readonly } = this.props;
+        const { updateAnnotations, editedState, changeHideEditedState } = this.props;
+        const { filteredStates } = this.state;
 
-        if (!readonly) {
-            for (const objectState of objectStates) {
-                objectState.hidden = hidden;
-            }
-
-            updateAnnotations(objectStates);
+        if (editedState?.shapeType === ShapeType.MASK) {
+            changeHideEditedState(hidden, false);
         }
+
+        for (const objectState of filteredStates) {
+            objectState.hidden = hidden;
+        }
+
+        updateAnnotations(filteredStates, true);
     }
 
     private collapseAllStates(collapsed: boolean): void {
-        const { objectStates, collapseStates } = this.props;
+        const { collapseStates } = this.props;
+        const { filteredStates } = this.state;
 
-        collapseStates(objectStates, collapsed);
+        collapseStates(filteredStates, collapsed);
     }
 
     public render(): JSX.Element {
@@ -254,55 +635,65 @@ class ObjectsListContainer extends React.PureComponent<Props, State> {
             statesHidden,
             statesLocked,
             activatedStateID,
-            jobInstance,
+            activatedElementID,
             maxZLayer,
             minZLayer,
+            currentZLayer,
+            hiddenZLayers,
             keyMap,
             normalizedKeyMap,
-            canvasInstance,
             colors,
             colorBy,
-            readonly,
-            listHeight,
             statesCollapsedAll,
+            showGroundTruth,
             updateAnnotations,
+            updateAnnotationsBatch,
             changeGroupColor,
             removeObject,
+            removeSelection,
             copyShape,
-            propagateObject,
+            copySelection,
+            selectedStatesID,
+            switchPropagateVisibility,
+            switchSimplifyVisibility,
             changeFrame,
+            workspace,
+            renderData,
+            selectObjects,
         } = this.props;
-        const { objectStates, sortedStatesID, statesOrdering } = this.state;
+        const {
+            objectStates, sortedStatesID, statesOrdering, filteredStates,
+        } = this.state;
 
-        const subKeyMap = {
-            SWITCH_ALL_LOCK: keyMap.SWITCH_ALL_LOCK,
-            SWITCH_LOCK: keyMap.SWITCH_LOCK,
-            SWITCH_ALL_HIDDEN: keyMap.SWITCH_ALL_HIDDEN,
-            SWITCH_HIDDEN: keyMap.SWITCH_HIDDEN,
-            SWITCH_OCCLUDED: keyMap.SWITCH_OCCLUDED,
-            SWITCH_KEYFRAME: keyMap.SWITCH_KEYFRAME,
-            SWITCH_OUTSIDE: keyMap.SWITCH_OUTSIDE,
-            DELETE_OBJECT: keyMap.DELETE_OBJECT,
-            TO_BACKGROUND: keyMap.TO_BACKGROUND,
-            TO_FOREGROUND: keyMap.TO_FOREGROUND,
-            COPY_SHAPE: keyMap.COPY_SHAPE,
-            PROPAGATE_OBJECT: keyMap.PROPAGATE_OBJECT,
-            NEXT_KEY_FRAME: keyMap.NEXT_KEY_FRAME,
-            PREV_KEY_FRAME: keyMap.PREV_KEY_FRAME,
-            CHANGE_OBJECT_COLOR: keyMap.CHANGE_OBJECT_COLOR,
-        };
-
-        const preventDefault = (event: KeyboardEvent | undefined): void => {
+        const preventDefault = (event?: KeyboardEvent): void => {
             if (event) {
                 event.preventDefault();
             }
         };
 
-        const activatedStated = (): any | null => {
+        const updateSelectedZOrder = (resolveZOrder: (state: ObjectState) => number): boolean => {
+            if (!selectedStatesID.length) {
+                return false;
+            }
+
+            const selectedStates = getSelectedStates(objectStates, selectedStatesID);
+            const statesToUpdate = prepareSelectionZOrder(selectedStates, resolveZOrder);
+            if (statesToUpdate.length) {
+                updateAnnotationsBatch(statesToUpdate);
+            }
+            return true;
+        };
+
+        const activatedState = (ignoreElements = false): ObjectState | null => {
             if (activatedStateID !== null) {
-                const [state] = objectStates.filter(
-                    (objectState: any): boolean => objectState.clientID === activatedStateID,
-                );
+                const state = objectStates
+                    .find((objectState: ObjectState): boolean => objectState.clientID === activatedStateID);
+
+                if (state && activatedElementID !== null && !ignoreElements) {
+                    const element = state.elements
+                        .find((_element: ObjectState): boolean => _element.clientID === activatedElementID);
+                    return element || null;
+                }
 
                 return state || null;
             }
@@ -310,69 +701,107 @@ class ObjectsListContainer extends React.PureComponent<Props, State> {
             return null;
         };
 
-        const handlers = {
-            SWITCH_ALL_LOCK: (event: KeyboardEvent | undefined) => {
+        const handlers: Record<keyof typeof componentShortcuts, Handlers[string]> = {
+            SWITCH_ALL_LOCK: (event?: KeyboardEvent) => {
                 preventDefault(event);
                 this.lockAllStates(!statesLocked);
             },
-            SWITCH_LOCK: (event: KeyboardEvent | undefined) => {
+            SWITCH_LOCK: (event?: KeyboardEvent) => {
                 preventDefault(event);
-                const state = activatedStated();
-                if (state && !readonly) {
+                if (selectedStatesID.length) {
+                    this.switchSelectionLock();
+                    return;
+                }
+                const state = activatedState();
+                if (state) {
                     state.lock = !state.lock;
                     updateAnnotations([state]);
                 }
             },
-            SWITCH_ALL_HIDDEN: (event: KeyboardEvent | undefined) => {
+            SWITCH_ALL_HIDDEN: (event?: KeyboardEvent) => {
                 preventDefault(event);
-                if (!readonly) {
-                    this.hideAllStates(!statesHidden);
-                }
+                this.hideAllStates(!statesHidden);
             },
-            SWITCH_HIDDEN: (event: KeyboardEvent | undefined) => {
+            SWITCH_HIDDEN: (event?: KeyboardEvent) => {
                 preventDefault(event);
-                const state = activatedStated();
-                if (state && !readonly) {
+                if (selectedStatesID.length) {
+                    this.switchSelectionHidden();
+                    return;
+                }
+                const state = activatedState();
+                const {
+                    editedState, changeHideEditedState, activeControl, activeObjectHidden,
+                } = this.props;
+                if (editedState?.shapeType === ShapeType.MASK || activeControl === ActiveControl.DRAW_MASK) {
+                    const hide = editedState ? !editedState.hidden : !activeObjectHidden;
+                    changeHideEditedState(hide);
+                }
+                if (state) {
                     state.hidden = !state.hidden;
                     updateAnnotations([state]);
                 }
             },
-            SWITCH_OCCLUDED: (event: KeyboardEvent | undefined) => {
+            SWITCH_OCCLUDED: (event?: KeyboardEvent) => {
                 preventDefault(event);
-                const state = activatedStated();
-                if (state && !readonly && state.objectType !== ObjectType.TAG) {
+                if (selectedStatesID.length) {
+                    this.switchSelectionOccluded();
+                    return;
+                }
+                const state = activatedState();
+                if (state && isLayerState(state)) {
                     state.occluded = !state.occluded;
                     updateAnnotations([state]);
                 }
             },
-            SWITCH_KEYFRAME: (event: KeyboardEvent | undefined) => {
+            SWITCH_PINNED: (event?: KeyboardEvent) => {
                 preventDefault(event);
-                const state = activatedStated();
-                if (state && !readonly && state.objectType === ObjectType.TRACK) {
-                    state.keyframe = !state.keyframe;
+                if (selectedStatesID.length) {
+                    this.switchSelectionPinned();
+                    return;
+                }
+                const state = activatedState(true);
+                if (state) {
+                    state.pinned = !state.pinned;
                     updateAnnotations([state]);
                 }
             },
-            SWITCH_OUTSIDE: (event: KeyboardEvent | undefined) => {
+            SWITCH_KEYFRAME: (event?: KeyboardEvent) => {
                 preventDefault(event);
-                const state = activatedStated();
-                if (state && !readonly && state.objectType === ObjectType.TRACK) {
+                const state = activatedState();
+                if (state && state.objectType === ObjectType.TRACK) {
+                    const { first, last } = state.keyframes as NonNullable<typeof state.keyframes>;
+                    if (first !== last || !state.keyframe) {
+                        state.keyframe = !state.keyframe;
+                        updateAnnotations([state]);
+                    }
+                }
+            },
+            SWITCH_OUTSIDE: (event?: KeyboardEvent) => {
+                preventDefault(event);
+                const state = activatedState();
+                if (state && (state.objectType === ObjectType.TRACK || state.parentID)) {
                     state.outside = !state.outside;
                     updateAnnotations([state]);
                 }
             },
-            DELETE_OBJECT: (event: KeyboardEvent | undefined) => {
+            DELETE_OBJECT_STANDARD_WORKSPACE: (event?: KeyboardEvent) => {
                 preventDefault(event);
-                const state = activatedStated();
-                if (state && !readonly) {
-                    removeObject(jobInstance, state, event ? event.shiftKey : false);
+                // with an active multi-selection the whole selection is removed
+                if (selectedStatesID.length) {
+                    removeSelection(event ? event.shiftKey : false);
+                    return;
+                }
+
+                const state = activatedState(true);
+                if (state) {
+                    removeObject(state, event ? event.shiftKey : false);
                 }
             },
-            CHANGE_OBJECT_COLOR: (event: KeyboardEvent | undefined) => {
+            CHANGE_OBJECT_COLOR: (event?: KeyboardEvent) => {
                 preventDefault(event);
-                const state = activatedStated();
+                const state = activatedState();
                 if (state) {
-                    if (colorBy === ColorBy.GROUP) {
+                    if (colorBy === ColorBy.GROUP && state.group) {
                         const colorID = (colors.indexOf(state.group.color) + 1) % colors.length;
                         changeGroupColor(state.group.id, colors[colorID]);
                         return;
@@ -385,83 +814,178 @@ class ObjectsListContainer extends React.PureComponent<Props, State> {
                     }
                 }
             },
-            TO_BACKGROUND: (event: KeyboardEvent | undefined) => {
+            TO_BACKGROUND: (event?: KeyboardEvent) => {
                 preventDefault(event);
-                const state = activatedStated();
-                if (state && !readonly && state.objectType !== ObjectType.TAG) {
+                if (updateSelectedZOrder((): number => minZLayer - 1)) {
+                    return;
+                }
+                const state = activatedState(true);
+                if (state && isLayerState(state)) {
                     state.zOrder = minZLayer - 1;
                     updateAnnotations([state]);
                 }
             },
-            TO_FOREGROUND: (event: KeyboardEvent | undefined) => {
+            TO_FOREGROUND: (event?: KeyboardEvent) => {
                 preventDefault(event);
-                const state = activatedStated();
-                if (state && !readonly && state.objectType !== ObjectType.TAG) {
+                if (updateSelectedZOrder((): number => maxZLayer + 1)) {
+                    return;
+                }
+                const state = activatedState(true);
+                if (state && isLayerState(state)) {
                     state.zOrder = maxZLayer + 1;
                     updateAnnotations([state]);
                 }
             },
-            COPY_SHAPE: (event: KeyboardEvent | undefined) => {
+            TO_ONE_LAYER_BACKWARD: (event?: KeyboardEvent) => {
                 preventDefault(event);
-                const state = activatedStated();
-                if (state && !readonly) {
+                if (updateSelectedZOrder((state: ObjectState): number => state.zOrder - 1)) {
+                    return;
+                }
+                const state = activatedState(true);
+                if (state && isLayerState(state)) {
+                    state.zOrder -= 1;
+                    updateAnnotations([state]);
+                }
+            },
+            TO_ONE_LAYER_FORWARD: (event?: KeyboardEvent) => {
+                preventDefault(event);
+                if (updateSelectedZOrder((state: ObjectState): number => state.zOrder + 1)) {
+                    return;
+                }
+                const state = activatedState(true);
+                if (state && isLayerState(state)) {
+                    state.zOrder += 1;
+                    updateAnnotations([state]);
+                }
+            },
+            COPY_SHAPE: (_event: KeyboardEvent, combo: string) => {
+                if (['ctrl+c', 'command+c'].includes(combo) && window.getSelection()?.type === 'Range') {
+                    return true;
+                }
+
+                if (selectedStatesID.length) {
+                    const selectedStates = getSelectedStates(objectStates, selectedStatesID);
+                    if (selectedStates.length === 1) {
+                        copyShape(selectedStates[0]);
+                        return false;
+                    }
+                    if (selectedStates.length > 1) {
+                        copySelection(selectedStates);
+                        return false;
+                    }
+                }
+
+                const state = activatedState(true);
+                if (state) {
                     copyShape(state);
                 }
+
+                return !state;
             },
-            PROPAGATE_OBJECT: (event: KeyboardEvent | undefined) => {
-                preventDefault(event);
-                const state = activatedStated();
-                if (state && !readonly) {
-                    propagateObject(state);
+            RUN_ANNOTATIONS_ACTION: () => {
+                if (selectedStatesID.length) {
+                    const selectedStates = getSelectedStates(objectStates, selectedStatesID);
+                    if (selectedStates.length) {
+                        openAnnotationsActionModal({ defaultObjectStates: selectedStates });
+                        return;
+                    }
+                }
+
+                const state = activatedState(true);
+                if (state) {
+                    openAnnotationsActionModal({ defaultObjectState: state });
+                } else {
+                    openAnnotationsActionModal();
                 }
             },
-            NEXT_KEY_FRAME: (event: KeyboardEvent | undefined) => {
+            PROPAGATE_OBJECT: (event?: KeyboardEvent) => {
                 preventDefault(event);
-                const state = activatedStated();
-                if (state && state.objectType === ObjectType.TRACK) {
+                const state = activatedState();
+                if (state) {
+                    switchPropagateVisibility(true);
+                }
+            },
+            NEXT_KEY_FRAME: (event?: KeyboardEvent) => {
+                preventDefault(event);
+                const state = activatedState();
+                if (state && state.keyframes) {
                     const frame = typeof state.keyframes.next === 'number' ? state.keyframes.next : null;
-                    if (frame !== null && canvasInstance.isAbleToChangeFrame()) {
+                    if (frame !== null && isAbleToChangeFrame(frame)) {
                         changeFrame(frame);
                     }
                 }
             },
-            PREV_KEY_FRAME: (event: KeyboardEvent | undefined) => {
+            PREV_KEY_FRAME: (event?: KeyboardEvent) => {
                 preventDefault(event);
-                const state = activatedStated();
-                if (state && state.objectType === ObjectType.TRACK) {
+                const state = activatedState();
+                if (state && state.keyframes) {
                     const frame = typeof state.keyframes.prev === 'number' ? state.keyframes.prev : null;
-                    if (frame !== null && canvasInstance.isAbleToChangeFrame()) {
+                    if (frame !== null && isAbleToChangeFrame(frame)) {
                         changeFrame(frame);
                     }
                 }
+            },
+            SIMPLIFY_POLYGON: (event?: KeyboardEvent) => {
+                preventDefault(event);
+                const state = activatedState(true);
+                if (state && [ShapeType.POLYGON, ShapeType.POLYLINE].includes(state.shapeType)) {
+                    switchSimplifyVisibility(state.clientID);
+                }
+            },
+            SELECT_ALL_OBJECTS: (event?: KeyboardEvent) => {
+                if (!isMultiSelectionSupported(workspace)) return;
+                const target = event?.target as HTMLElement | null;
+                if (target?.closest('input, textarea, [contenteditable]')) return;
+
+                preventDefault(event);
+                selectObjects(filteredStates.filter((state: ObjectState): boolean => (
+                    [ObjectType.SHAPE, ObjectType.TRACK].includes(state.objectType) &&
+                    !state.outside && !state.hidden && !hiddenZLayers.has(state.zOrder)
+                )).map((state: ObjectState): number => state.clientID as number));
             },
         };
 
         return (
             <>
-                <GlobalHotKeys keyMap={subKeyMap} handlers={handlers} />
+                <GlobalHotKeys
+                    keyMap={withDeleteKeyAliases(subKeyMap(componentShortcuts, keyMap))}
+                    handlers={handlers}
+                />
                 <ObjectsListComponent
-                    listHeight={listHeight}
                     statesHidden={statesHidden}
                     statesLocked={statesLocked}
                     statesCollapsedAll={statesCollapsedAll}
-                    readonly={readonly || false}
+                    workspace={workspace}
                     statesOrdering={statesOrdering}
+                    currentLayer={currentZLayer}
+                    hiddenLayers={hiddenZLayers}
+                    selectedStatesID={selectedStatesID}
                     sortedStatesID={sortedStatesID}
-                    objectStates={objectStates}
+                    showGroundTruth={showGroundTruth}
+                    objectStates={filteredStates}
+                    visibleSkeletonElements={renderData.visibleSkeletonElements}
                     switchHiddenAllShortcut={normalizedKeyMap.SWITCH_ALL_HIDDEN}
                     switchLockAllShortcut={normalizedKeyMap.SWITCH_ALL_LOCK}
                     changeStatesOrdering={this.onChangeStatesOrdering}
+                    selectLayer={this.props.selectLayer}
+                    toggleLayersVisibility={this.props.toggleLayersVisibility}
+                    moveObjectsToLayer={this.moveObjectsToLayer}
+                    moveObjectsOnNewLayer={this.moveObjectsOnNewLayer}
+                    compactLayers={this.compactLayers}
                     lockAllStates={this.onLockAllStates}
                     unlockAllStates={this.onUnlockAllStates}
                     collapseAllStates={this.onCollapseAllStates}
                     expandAllStates={this.onExpandAllStates}
                     hideAllStates={this.onHideAllStates}
                     showAllStates={this.onShowAllStates}
+                    changeShowGroundTruth={this.changeShowGroundTruth}
+                    selectObjects={selectObjects}
                 />
             </>
         );
     }
 }
 
-export default connect(mapStateToProps, mapDispatchToProps)(ObjectsListContainer);
+export default connect(
+    mapStateToProps, mapDispatchToProps,
+)(ObjectsListContainer);

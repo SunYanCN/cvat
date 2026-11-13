@@ -1,39 +1,49 @@
-// Copyright (C) 2020 Intel Corporation
+// Copyright (C) 2020-2022 Intel Corporation
+// Copyright (C) CVAT.ai Corporation
 //
 // SPDX-License-Identifier: MIT
 
 import React from 'react';
 import Text from 'antd/lib/typography/Text';
 import { Row, Col } from 'antd/lib/grid';
-import Icon from '@ant-design/icons';
+import Empty from 'antd/lib/empty';
 
-import consts from 'consts';
-import { EmptyTasksIcon as EmptyModelsIcon } from 'icons';
+import config from 'config';
 
-export default function EmptyListComponent(): JSX.Element {
+interface Props {
+    notFound?: boolean;
+}
+
+export default function EmptyListComponent(props: Readonly<Props>): JSX.Element {
+    const { notFound = false } = props;
+
     return (
         <div className='cvat-empty-models-list'>
-            <Row justify='center' align='middle'>
-                <Col>
-                    <Icon className='cvat-empty-models-icon' component={EmptyModelsIcon} />
-                </Col>
-            </Row>
-            <Row justify='center' align='middle'>
-                <Col>
-                    <Text strong>No models deployed yet...</Text>
-                </Col>
-            </Row>
-            <Row justify='center' align='middle'>
-                <Col>
-                    <Text type='secondary'>To annotate your tasks automatically</Text>
-                </Col>
-            </Row>
-            <Row justify='center' align='middle'>
-                <Col>
-                    <Text type='secondary'>deploy a model with </Text>
-                    <a href={`${consts.NUCLIO_GUIDE}`}>nuclio</a>
-                </Col>
-            </Row>
+            <Empty
+                image={notFound ? Empty.PRESENTED_IMAGE_SIMPLE : Empty.PRESENTED_IMAGE_DEFAULT}
+                description={(
+                    notFound ? <Text strong>No models found</Text> : (
+                        <div>
+                            <Row justify='center' align='middle'>
+                                <Col>
+                                    <Text strong>No models deployed yet...</Text>
+                                </Col>
+                            </Row>
+                            <Row justify='center' align='middle'>
+                                <Col>
+                                    <Text type='secondary'>To annotate your tasks automatically</Text>
+                                </Col>
+                            </Row>
+                            <Row justify='center' align='middle'>
+                                <Col>
+                                    <Text type='secondary'>deploy a model with </Text>
+                                    <a href={`${config.NUCLIO_GUIDE}`}>nuclio</a>
+                                </Col>
+                            </Row>
+                        </div>
+                    )
+                )}
+            />
         </div>
     );
 }

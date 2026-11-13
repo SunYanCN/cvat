@@ -1,34 +1,50 @@
-// Copyright (C) 2021 Intel Corporation
+// Copyright (C) 2021-2022 Intel Corporation
+// Copyright (C) CVAT.ai Corporation
 //
 // SPDX-License-Identifier: MIT
 
-import pjson from '../../package.json';
 import { Canvas3dController, Canvas3dControllerImpl } from './canvas3dController';
 import {
-    Canvas3dModel, Canvas3dModelImpl, Mode, DrawData, ViewType, MouseInteraction,
+    Canvas3dModel,
+    Canvas3dModelImpl,
+    Mode,
+    DrawData,
+    ViewType,
+    MouseInteraction,
+    Configuration,
+    GroupData,
+    SplitData,
+    MergeData,
 } from './canvas3dModel';
 import {
-    Canvas3dView, Canvas3dViewImpl, ViewsDOM, CAMERA_ACTION,
+    Canvas3dView, Canvas3dViewImpl, ViewsDOM, CameraAction,
 } from './canvas3dView';
 import { Master } from './master';
 
-const Canvas3dVersion = pjson.version;
-
 interface Canvas3d {
     html(): ViewsDOM;
-    setup(frameData: any): void;
+    setup(frameData: any, objectStates: any[]): void;
     isAbleToChangeFrame(): boolean;
     mode(): Mode;
     render(): void;
     keyControls(keys: KeyboardEvent): void;
-    mouseControls(type: string, event: MouseEvent): void;
     draw(drawData: DrawData): void;
     cancel(): void;
+    dragCanvas(enable: boolean): void;
+    activate(clientID: number | null, attributeID?: number): void;
+    configure(configuration: Configuration): void;
+    fitCanvas(): void;
+    fit(): void;
+    focus(clientID: number): void;
+    group(groupData: GroupData): void;
+    merge(mergeData: MergeData): void;
+    split(splitData: SplitData): void;
+    destroy(): void;
 }
 
 class Canvas3dImpl implements Canvas3d {
-    private model: Canvas3dModel & Master;
-    private controller: Canvas3dController;
+    private readonly model: Canvas3dModel & Master;
+    private readonly controller: Canvas3dController;
     private view: Canvas3dView;
 
     public constructor() {
@@ -45,10 +61,6 @@ class Canvas3dImpl implements Canvas3d {
         this.view.keyControls(keys);
     }
 
-    public mouseControls(type: MouseInteraction, event: MouseEvent): void {
-        this.view.mouseControls(type, event);
-    }
-
     public render(): void {
         this.view.render();
     }
@@ -57,12 +69,24 @@ class Canvas3dImpl implements Canvas3d {
         this.model.draw(drawData);
     }
 
-    public setup(frameData: any): void {
-        this.model.setup(frameData);
+    public setup(frameData: any, objectStates: any[]): void {
+        this.model.setup(frameData, objectStates);
     }
 
     public mode(): Mode {
         return this.model.mode;
+    }
+
+    public group(groupData: GroupData): void {
+        this.model.group(groupData);
+    }
+
+    public split(splitData: SplitData): void {
+        this.model.split(splitData);
+    }
+
+    public merge(mergeData: MergeData): void {
+        this.model.merge(mergeData);
     }
 
     public isAbleToChangeFrame(): boolean {
@@ -72,8 +96,39 @@ class Canvas3dImpl implements Canvas3d {
     public cancel(): void {
         this.model.cancel();
     }
+
+    public dragCanvas(enable: boolean): void {
+        this.model.dragCanvas(enable);
+    }
+
+    public configure(configuration: Partial<Configuration>): void {
+        this.model.configure(configuration);
+    }
+
+    public activate(clientID: number | null, attributeID: number | null = null): void {
+        this.model.activate(typeof clientID === 'number' ? String(clientID) : null, attributeID);
+    }
+
+    public focus(clientID: number): void {
+        this.view.focusObjectByClientId(clientID, true);
+    }
+
+    public fit(): void {
+        this.model.fit();
+    }
+
+    public fitCanvas(): void {
+        // in spite of 2D canvas, 3D version fits automatically when external container resized
+        // so, nothing to do here, but keep the method to keep the same interface as 2D canvas
+    }
+
+    public destroy(): void {
+        this.model.destroy();
+    }
 }
 
 export {
-    Canvas3dImpl as Canvas3d, Canvas3dVersion, ViewType, MouseInteraction, CAMERA_ACTION,
+    Canvas3dImpl as Canvas3d, ViewType, MouseInteraction, CameraAction, Mode as CanvasMode,
 };
+
+export type { ViewsDOM };

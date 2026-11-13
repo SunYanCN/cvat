@@ -1,17 +1,16 @@
-// Copyright (C) 2020-2021 Intel Corporation
+// Copyright (C) 2020-2022 Intel Corporation
+// Copyright (C) CVAT.ai Corporation
 //
 // SPDX-License-Identifier: MIT
 
 import { AnyAction } from 'redux';
 
-import { BoundariesActionTypes } from 'actions/boundaries-actions';
 import { AuthActionTypes } from 'actions/auth-actions';
 import { SettingsActionTypes } from 'actions/settings-actions';
 import { AnnotationActionTypes } from 'actions/annotation-actions';
-
 import {
     SettingsState, GridColor, FrameSpeed, ColorBy,
-} from './interfaces';
+} from 'reducers';
 
 const defaultState: SettingsState = {
     shapes: {
@@ -22,15 +21,30 @@ const defaultState: SettingsState = {
         outlineColor: '#000000',
         showBitmap: false,
         showProjections: false,
+        showGroundTruth: false,
+        orientationVisibility: {
+            x: false,
+            y: false,
+            z: false,
+        },
     },
     workspace: {
         autoSave: false,
         autoSaveInterval: 15 * 60 * 1000,
-        aamZoomMargin: 100,
+        focusedObjectPadding: 50,
         automaticBordering: false,
+        snapToPoint: false,
+        adaptiveZoom: true,
         showObjectsTextAlways: false,
         showAllInterpolationTracks: false,
         intelligentPolygonCrop: true,
+        defaultApproxPolyAccuracy: 9,
+        textFontSize: 14,
+        controlPointsSize: 5,
+        textPosition: 'auto',
+        textContent: 'id,source,label,attributes,descriptions,dimensions',
+        showConflictRequirements: false,
+        showTagsOnFrame: true,
     },
     player: {
         canvasBackgroundColor: '#ffffff',
@@ -38,6 +52,8 @@ const defaultState: SettingsState = {
         frameSpeed: FrameSpeed.Usual,
         resetZoom: false,
         rotateAll: false,
+        smoothImage: true,
+        showDeletedFrames: false,
         grid: false,
         gridSize: 100,
         gridColor: GridColor.White,
@@ -46,6 +62,7 @@ const defaultState: SettingsState = {
         contrastLevel: 100,
         saturationLevel: 100,
     },
+    imageFilters: [],
     showDialog: false,
 };
 
@@ -105,6 +122,15 @@ export default (state = defaultState, action: AnyAction): SettingsState => {
                 },
             };
         }
+        case SettingsActionTypes.CHANGE_SHOW_GROUND_TRUTH: {
+            return {
+                ...state,
+                shapes: {
+                    ...state.shapes,
+                    showGroundTruth: action.payload.showGroundTruth,
+                },
+            };
+        }
         case SettingsActionTypes.CHANGE_SHAPES_OPACITY: {
             return {
                 ...state,
@@ -142,6 +168,18 @@ export default (state = defaultState, action: AnyAction): SettingsState => {
                 },
             };
         }
+        case SettingsActionTypes.CHANGE_SHAPES_ORIENTATION_VISIBILITY: {
+            return {
+                ...state,
+                shapes: {
+                    ...state.shapes,
+                    orientationVisibility: {
+                        ...state.shapes.orientationVisibility,
+                        ...action.payload.orientationVisibility,
+                    },
+                },
+            };
+        }
         case SettingsActionTypes.CHANGE_SHOW_UNLABELED_REGIONS: {
             return {
                 ...state,
@@ -175,6 +213,61 @@ export default (state = defaultState, action: AnyAction): SettingsState => {
                 player: {
                     ...state.player,
                     resetZoom: action.payload.resetZoom,
+                },
+            };
+        }
+        case SettingsActionTypes.SWITCH_SMOOTH_IMAGE: {
+            return {
+                ...state,
+                player: {
+                    ...state.player,
+                    smoothImage: action.payload.smoothImage,
+                },
+            };
+        }
+        case SettingsActionTypes.SWITCH_TEXT_FONT_SIZE: {
+            return {
+                ...state,
+                workspace: {
+                    ...state.workspace,
+                    textFontSize: action.payload.fontSize,
+                },
+            };
+        }
+        case SettingsActionTypes.SWITCH_CONTROL_POINTS_SIZE: {
+            return {
+                ...state,
+                workspace: {
+                    ...state.workspace,
+                    controlPointsSize: action.payload.controlPointsSize,
+                },
+            };
+        }
+        case SettingsActionTypes.SWITCH_TEXT_POSITION: {
+            return {
+                ...state,
+                workspace: {
+                    ...state.workspace,
+                    textPosition: action.payload.position,
+                },
+            };
+        }
+        case SettingsActionTypes.SWITCH_TEXT_CONTENT: {
+            const { textContent } = action.payload;
+            return {
+                ...state,
+                workspace: {
+                    ...state.workspace,
+                    textContent,
+                },
+            };
+        }
+        case SettingsActionTypes.SWITCH_SHOWING_CONFLICT_REQUIREMENTS: {
+            return {
+                ...state,
+                workspace: {
+                    ...state.workspace,
+                    showConflictRequirements: action.payload.showConflictRequirements,
                 },
             };
         }
@@ -223,12 +316,12 @@ export default (state = defaultState, action: AnyAction): SettingsState => {
                 },
             };
         }
-        case SettingsActionTypes.CHANGE_AAM_ZOOM_MARGIN: {
+        case SettingsActionTypes.CHANGE_FOCUSED_OBJECT_PADDING: {
             return {
                 ...state,
                 workspace: {
                     ...state.workspace,
-                    aamZoomMargin: action.payload.aamZoomMargin,
+                    focusedObjectPadding: action.payload.focusedObjectPadding,
                 },
             };
         }
@@ -259,6 +352,24 @@ export default (state = defaultState, action: AnyAction): SettingsState => {
                 },
             };
         }
+        case SettingsActionTypes.SWITCH_SNAP_TO_POINT: {
+            return {
+                ...state,
+                workspace: {
+                    ...state.workspace,
+                    snapToPoint: action.payload.snapToPoint,
+                },
+            };
+        }
+        case SettingsActionTypes.SWITCH_ADAPTIVE_ZOOM: {
+            return {
+                ...state,
+                workspace: {
+                    ...state.workspace,
+                    adaptiveZoom: action.payload.adaptiveZoom,
+                },
+            };
+        }
         case SettingsActionTypes.SWITCH_INTELLIGENT_POLYGON_CROP: {
             return {
                 ...state,
@@ -277,10 +388,19 @@ export default (state = defaultState, action: AnyAction): SettingsState => {
                 },
             };
         }
+        case SettingsActionTypes.CHANGE_DEFAULT_APPROX_POLY_THRESHOLD: {
+            return {
+                ...state,
+                workspace: {
+                    ...state.workspace,
+                    defaultApproxPolyAccuracy: action.payload.approxPolyAccuracy,
+                },
+            };
+        }
         case SettingsActionTypes.SWITCH_SETTINGS_DIALOG: {
             return {
                 ...state,
-                showDialog: typeof action.payload.show === 'undefined' ? !state.showDialog : action.payload.show,
+                showDialog: action.payload.visible,
             };
         }
         case SettingsActionTypes.SET_SETTINGS: {
@@ -289,15 +409,90 @@ export default (state = defaultState, action: AnyAction): SettingsState => {
                 ...action.payload.settings,
             };
         }
-        case BoundariesActionTypes.RESET_AFTER_ERROR:
-        case AnnotationActionTypes.GET_JOB_SUCCESS: {
-            const { job } = action.payload;
-
+        case SettingsActionTypes.SWITCH_SHOWING_DELETED_FRAMES: {
             return {
                 ...state,
                 player: {
                     ...state.player,
-                    resetZoom: job && job.task.mode === 'annotation',
+                    showDeletedFrames: action.payload.showDeletedFrames,
+                },
+            };
+        }
+        case SettingsActionTypes.SWITCH_SHOWING_TAGS_ON_FRAME: {
+            return {
+                ...state,
+                workspace: {
+                    ...state.workspace,
+                    showTagsOnFrame: action.payload.showTagsOnFrame,
+                },
+            };
+        }
+        case SettingsActionTypes.ENABLE_IMAGE_FILTER: {
+            const { filter, options } = action.payload;
+            const { alias } = filter;
+            const filters = [...state.imageFilters];
+            const index = filters.findIndex((imageFilter) => imageFilter.alias === alias);
+            if (options && index !== -1) {
+                const enabledFilter = filters[index];
+                enabledFilter.modifier.currentProcessedImage = null;
+                enabledFilter.modifier.configure(options);
+                return {
+                    ...state,
+                    imageFilters: filters,
+                };
+            }
+            return {
+                ...state,
+                imageFilters: [
+                    ...state.imageFilters,
+                    action.payload.filter,
+                ],
+            };
+        }
+        case SettingsActionTypes.DISABLE_IMAGE_FILTER: {
+            const { filterAlias } = action.payload;
+            const filters = [...state.imageFilters];
+            const index = filters.findIndex((imageFilter) => imageFilter.alias === filterAlias);
+            if (index !== -1) {
+                filters.splice(index, 1);
+            }
+            filters.forEach((imageFilter) => {
+                // eslint-disable-next-line no-param-reassign
+                imageFilter.modifier.currentProcessedImage = null;
+            });
+            return {
+                ...state,
+                imageFilters: filters,
+            };
+        }
+        case SettingsActionTypes.RESET_IMAGE_FILTERS: {
+            return {
+                ...state,
+                imageFilters: [],
+            };
+        }
+        case AnnotationActionTypes.GET_JOB_SUCCESS: {
+            const filters = [...state.imageFilters];
+            filters.forEach((imageFilter) => {
+                // eslint-disable-next-line no-param-reassign
+                imageFilter.modifier.currentProcessedImage = null;
+            });
+
+            return {
+                ...state,
+                imageFilters: filters,
+                shapes: {
+                    ...state.shapes,
+                    showGroundTruth: false,
+                },
+            };
+        }
+        case AnnotationActionTypes.CHANGE_WORKSPACE: {
+            return {
+                ...state,
+                shapes: {
+                    ...state.shapes,
+                    showGroundTruth: false,
                 },
             };
         }

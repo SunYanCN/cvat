@@ -1,4 +1,5 @@
-// Copyright (C) 2020-2021 Intel Corporation
+// Copyright (C) 2020-2022 Intel Corporation
+// Copyright (C) CVAT.ai Corporation
 //
 // SPDX-License-Identifier: MIT
 
@@ -6,18 +7,20 @@ import { connect } from 'react-redux';
 
 import { Canvas } from 'cvat-canvas-wrapper';
 import {
-    mergeObjects,
-    groupObjects,
-    splitTrack,
+    updateActiveControl as updateActiveControlAction,
     redrawShapeAsync,
+    rotateActiveObjectOrFrame,
     rotateCurrentFrame,
     repeatDrawShapeAsync,
     pasteShapeAsync,
+    pasteSelectionAsync,
     resetAnnotationsGroup,
+    groupSelectedAnnotationsAsync,
 } from 'actions/annotation-actions';
 import ControlsSideBarComponent from 'components/annotation-page/standard-workspace/controls-side-bar/controls-side-bar';
-import { ActiveControl, CombinedState, Rotation } from 'reducers/interfaces';
+import { ActiveControl, CombinedState, Rotation } from 'reducers';
 import { KeyMap } from 'utils/mousetrap-react';
+import { getSelectionGroupState } from 'utils/multi-selection';
 
 interface StateToProps {
     canvasInstance: Canvas;
@@ -25,18 +28,26 @@ interface StateToProps {
     activeControl: ActiveControl;
     keyMap: KeyMap;
     normalizedKeyMap: Record<string, string>;
-    labels: any[];
+    labels: CombinedState['annotation']['job']['labels'];
+    frameData: any;
+    hasCopiedSelection: boolean;
+    hasSelectedObjects: boolean;
+    selectedObjectsCount: number;
+    hasGroupedSelectedObjects: boolean;
+    selectedObjectsInSameGroup: boolean;
+    selectionGroupDisabledReason: string | null;
 }
 
 interface DispatchToProps {
-    mergeObjects(enabled: boolean): void;
-    groupObjects(enabled: boolean): void;
-    splitTrack(enabled: boolean): void;
+    updateActiveControl(activeControl: ActiveControl): void;
     rotateFrame(angle: Rotation): void;
+    rotateActiveObjectOrFrame(angle: Rotation): void;
     resetGroup(): void;
     repeatDrawShape(): void;
     pasteShape(): void;
+    pasteSelection(): void;
     redrawShape(): void;
+    groupSelection(reset?: boolean): void;
 }
 
 function mapStateToProps(state: CombinedState): StateToProps {
@@ -44,36 +55,48 @@ function mapStateToProps(state: CombinedState): StateToProps {
         annotation: {
             canvas: { instance: canvasInstance, activeControl },
             job: { labels },
+            player: {
+                frame: { data: frameData },
+            },
+            drawing: { copiedStates },
+            annotations: { states, selectedStatesID },
         },
         settings: {
             player: { rotateAll },
         },
         shortcuts: { keyMap, normalizedKeyMap },
     } = state;
+    const selectedIDs = new Set(selectedStatesID);
+    const selectedStates = states.filter((objectState) => selectedIDs.has(objectState.clientID));
+    const selectionGroupState = getSelectionGroupState(selectedStates);
 
     return {
         rotateAll,
-        canvasInstance,
+        canvasInstance: canvasInstance as Canvas,
         activeControl,
         labels,
         normalizedKeyMap,
         keyMap,
+        frameData,
+        hasCopiedSelection: !!copiedStates && copiedStates.length > 0,
+        hasSelectedObjects: selectedStatesID.length > 0,
+        selectedObjectsCount: selectedStates.length,
+        hasGroupedSelectedObjects: selectionGroupState.canUngroup,
+        selectedObjectsInSameGroup: selectionGroupState.alreadyInSameGroup,
+        selectionGroupDisabledReason: selectionGroupState.disabledReason,
     };
 }
 
 function dispatchToProps(dispatch: any): DispatchToProps {
     return {
-        mergeObjects(enabled: boolean): void {
-            dispatch(mergeObjects(enabled));
-        },
-        groupObjects(enabled: boolean): void {
-            dispatch(groupObjects(enabled));
-        },
-        splitTrack(enabled: boolean): void {
-            dispatch(splitTrack(enabled));
+        updateActiveControl(activeControl: ActiveControl): void {
+            dispatch(updateActiveControlAction(activeControl));
         },
         rotateFrame(rotation: Rotation): void {
             dispatch(rotateCurrentFrame(rotation));
+        },
+        rotateActiveObjectOrFrame(rotation: Rotation): void {
+            dispatch(rotateActiveObjectOrFrame(rotation));
         },
         repeatDrawShape(): void {
             dispatch(repeatDrawShapeAsync());
@@ -81,11 +104,17 @@ function dispatchToProps(dispatch: any): DispatchToProps {
         pasteShape(): void {
             dispatch(pasteShapeAsync());
         },
+        pasteSelection(): void {
+            dispatch(pasteSelectionAsync());
+        },
         resetGroup(): void {
             dispatch(resetAnnotationsGroup());
         },
         redrawShape(): void {
             dispatch(redrawShapeAsync());
+        },
+        groupSelection(reset = false): void {
+            dispatch(groupSelectedAnnotationsAsync(reset));
         },
     };
 }

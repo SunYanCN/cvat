@@ -1,12 +1,18 @@
-// Copyright (C) 2020-2021 Intel Corporation
+// Copyright (C) 2020-2022 Intel Corporation
+// Copyright (C) CVAT.ai Corporation
 //
 // SPDX-License-Identifier: MIT
 
 import React from 'react';
-import Input from 'antd/lib/input';
 import { Col, Row } from 'antd/lib/grid';
 
-import { PredictorState, Workspace } from 'reducers/interfaces';
+import {
+    ActiveControl, NavigationType, Workspace,
+} from 'reducers';
+import { Job, JobType } from 'cvat-core-wrapper';
+import { RectDrawingMethod } from 'cvat-canvas-wrapper';
+import { KeyMap } from 'utils/mousetrap-react';
+import { Chapter } from 'cvat-core/src/frames';
 import LeftGroup from './left-group';
 import PlayerButtons from './player-buttons';
 import PlayerNavigation from './player-navigation';
@@ -15,155 +21,218 @@ import RightGroup from './right-group';
 interface Props {
     playing: boolean;
     saving: boolean;
-    savingStatuses: string[];
+    chapters: Chapter[];
+    hoveredChapter: number | null;
     frameNumber: number;
     frameFilename: string;
-    inputFrameRef: React.RefObject<Input>;
+    frameDeleted: boolean;
+    inputFrameRef: React.RefObject<HTMLInputElement>;
     startFrame: number;
     stopFrame: number;
     undoAction?: string;
     redoAction?: string;
     workspace: Workspace;
-    saveShortcut: string;
     undoShortcut: string;
     redoShortcut: string;
+    drawShortcut: string;
     playPauseShortcut: string;
+    deleteFrameShortcut: string;
     nextFrameShortcut: string;
     previousFrameShortcut: string;
     forwardShortcut: string;
     backwardShortcut: string;
-    prevButtonType: string;
-    nextButtonType: string;
+    navigationType: NavigationType;
     focusFrameInputShortcut: string;
-    predictor: PredictorState;
-    isTrainingActive: boolean;
+    searchFrameByNameShortcut: string;
+    activeControl: ActiveControl;
+    rectDrawingMethod?: RectDrawingMethod;
+    annotationFilters: object[];
+    initialOpenGuide: boolean;
+    showSearchFrameByName: boolean;
+    keyMap: KeyMap;
+    jobInstance: Job;
+    ranges: string;
     changeWorkspace(workspace: Workspace): void;
-    switchPredictor(predictorEnabled: boolean): void;
     showStatistics(): void;
     showFilters(): void;
     onSwitchPlay(): void;
-    onSaveAnnotation(): void;
     onPrevFrame(): void;
     onNextFrame(): void;
     onForward(): void;
     onBackward(): void;
     onFirstFrame(): void;
     onLastFrame(): void;
-    setPrevButtonType(type: 'regular' | 'filtered' | 'empty'): void;
-    setNextButtonType(type: 'regular' | 'filtered' | 'empty'): void;
+    onSearchAnnotations(direction: 'forward' | 'backward'): void;
+    onSearchChapters(direction: 'forward' | 'backward'): void;
+    onSelectChapter(id: number): void;
+    setHoveredChapter(id: number | null): void;
     onSliderChange(value: number): void;
     onInputChange(value: number): void;
     onURLIconClick(): void;
+    onCopyFilenameIconClick(): void;
     onUndoClick(): void;
     onRedoClick(): void;
-    jobInstance: any;
-    hideShowContextImage(): any;
+    onFinishDraw(): void;
+    onDeleteFrame(): void;
+    onRestoreFrame(): void;
+    switchNavigationBlocked(blocked: boolean): void;
+    setNavigationType(navigationType: NavigationType): void;
+    switchShowSearchPallet(visible: boolean): void;
 }
 
 export default function AnnotationTopBarComponent(props: Props): JSX.Element {
     const {
         saving,
-        savingStatuses,
         undoAction,
         redoAction,
         playing,
+        chapters,
+        hoveredChapter,
+        ranges,
         frameNumber,
         frameFilename,
+        frameDeleted,
         inputFrameRef,
         startFrame,
         stopFrame,
         workspace,
-        saveShortcut,
         undoShortcut,
         redoShortcut,
+        drawShortcut,
         playPauseShortcut,
+        deleteFrameShortcut,
         nextFrameShortcut,
         previousFrameShortcut,
         forwardShortcut,
         backwardShortcut,
-        prevButtonType,
-        nextButtonType,
-        predictor,
         focusFrameInputShortcut,
+        searchFrameByNameShortcut,
+        activeControl,
+        rectDrawingMethod,
+        annotationFilters,
+        initialOpenGuide,
+        navigationType,
+        jobInstance,
+        keyMap,
         showStatistics,
-        switchPredictor,
         showFilters,
         changeWorkspace,
         onSwitchPlay,
-        onSaveAnnotation,
         onPrevFrame,
         onNextFrame,
         onForward,
         onBackward,
         onFirstFrame,
         onLastFrame,
-        setPrevButtonType,
-        setNextButtonType,
+        onSearchAnnotations,
+        onSearchChapters,
+        onSelectChapter,
+        setHoveredChapter,
         onSliderChange,
         onInputChange,
         onURLIconClick,
+        onCopyFilenameIconClick,
         onUndoClick,
         onRedoClick,
-        jobInstance,
-        isTrainingActive,
+        onFinishDraw,
+        onDeleteFrame,
+        onRestoreFrame,
+        setNavigationType,
+        switchNavigationBlocked,
+        switchShowSearchPallet,
+        showSearchFrameByName,
     } = props;
+
+    const playerItems: [JSX.Element, number][] = [];
+
+    playerItems.push([(
+        <PlayerButtons
+            key='player_buttons'
+            playing={playing}
+            playPauseShortcut={playPauseShortcut}
+            nextFrameShortcut={nextFrameShortcut}
+            previousFrameShortcut={previousFrameShortcut}
+            forwardShortcut={forwardShortcut}
+            backwardShortcut={backwardShortcut}
+            navigationType={navigationType}
+            chapters={chapters}
+            keyMap={keyMap}
+            workspace={workspace}
+            onPrevFrame={onPrevFrame}
+            onNextFrame={onNextFrame}
+            onForward={onForward}
+            onBackward={onBackward}
+            onFirstFrame={onFirstFrame}
+            onLastFrame={onLastFrame}
+            onSwitchPlay={onSwitchPlay}
+            onSearchAnnotations={onSearchAnnotations}
+            onSearchChapters={onSearchChapters}
+            onHoveredChapter={setHoveredChapter}
+            onSelectChapter={onSelectChapter}
+            setNavigationType={setNavigationType}
+        />
+    ), 0]);
+
+    playerItems.push([(
+        <PlayerNavigation
+            key='player_navigation'
+            startFrame={startFrame}
+            stopFrame={stopFrame}
+            playing={playing}
+            chapters={chapters}
+            hoveredChapter={hoveredChapter}
+            ranges={ranges}
+            frameNumber={frameNumber}
+            frameFilename={frameFilename}
+            frameDeleted={frameDeleted}
+            frameDeletionAvailable={jobInstance.type !== JobType.REPLICA}
+            deleteFrameShortcut={deleteFrameShortcut}
+            focusFrameInputShortcut={focusFrameInputShortcut}
+            searchFrameByNameShortcut={searchFrameByNameShortcut}
+            inputFrameRef={inputFrameRef}
+            keyMap={keyMap}
+            workspace={workspace}
+            onSliderChange={onSliderChange}
+            onInputChange={onInputChange}
+            onURLIconClick={onURLIconClick}
+            onCopyFilenameIconClick={onCopyFilenameIconClick}
+            onDeleteFrame={onDeleteFrame}
+            onRestoreFrame={onRestoreFrame}
+            switchNavigationBlocked={switchNavigationBlocked}
+            switchShowSearchPallet={switchShowSearchPallet}
+            showSearchFrameByName={showSearchFrameByName}
+        />
+    ), 10]);
 
     return (
         <Row justify='space-between'>
             <LeftGroup
                 saving={saving}
-                savingStatuses={savingStatuses}
                 undoAction={undoAction}
                 redoAction={redoAction}
-                saveShortcut={saveShortcut}
                 undoShortcut={undoShortcut}
                 redoShortcut={redoShortcut}
-                onSaveAnnotation={onSaveAnnotation}
+                activeControl={activeControl}
+                rectDrawingMethod={rectDrawingMethod}
+                drawShortcut={drawShortcut}
                 onUndoClick={onUndoClick}
                 onRedoClick={onRedoClick}
+                onFinishDraw={onFinishDraw}
+                keyMap={keyMap}
             />
             <Col className='cvat-annotation-header-player-group'>
                 <Row align='middle'>
-                    <PlayerButtons
-                        playing={playing}
-                        playPauseShortcut={playPauseShortcut}
-                        nextFrameShortcut={nextFrameShortcut}
-                        previousFrameShortcut={previousFrameShortcut}
-                        forwardShortcut={forwardShortcut}
-                        backwardShortcut={backwardShortcut}
-                        prevButtonType={prevButtonType}
-                        nextButtonType={nextButtonType}
-                        onPrevFrame={onPrevFrame}
-                        onNextFrame={onNextFrame}
-                        onForward={onForward}
-                        onBackward={onBackward}
-                        onFirstFrame={onFirstFrame}
-                        onLastFrame={onLastFrame}
-                        onSwitchPlay={onSwitchPlay}
-                        setPrevButton={setPrevButtonType}
-                        setNextButton={setNextButtonType}
-                    />
-                    <PlayerNavigation
-                        startFrame={startFrame}
-                        stopFrame={stopFrame}
-                        frameNumber={frameNumber}
-                        frameFilename={frameFilename}
-                        focusFrameInputShortcut={focusFrameInputShortcut}
-                        inputFrameRef={inputFrameRef}
-                        onSliderChange={onSliderChange}
-                        onInputChange={onInputChange}
-                        onURLIconClick={onURLIconClick}
-                    />
+                    { playerItems.sort((menuItem1, menuItem2) => menuItem1[1] - menuItem2[1])
+                        .map((menuItem) => menuItem[0]) }
                 </Row>
             </Col>
             <RightGroup
-                predictor={predictor}
                 workspace={workspace}
-                switchPredictor={switchPredictor}
                 jobInstance={jobInstance}
+                annotationFilters={annotationFilters}
+                initialOpenGuide={initialOpenGuide}
                 changeWorkspace={changeWorkspace}
                 showStatistics={showStatistics}
-                isTrainingActive={isTrainingActive}
                 showFilters={showFilters}
             />
         </Row>

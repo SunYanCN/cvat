@@ -1,94 +1,138 @@
-// Copyright (C) 2020-2021 Intel Corporation
+// Copyright (C) 2020-2022 Intel Corporation
+// Copyright (C) CVAT.ai Corporation
 //
 // SPDX-License-Identifier: MIT
 
 import React from 'react';
 import { Col } from 'antd/lib/grid';
-import Icon from '@ant-design/icons';
+import Icon, { CheckCircleOutlined, LoadingOutlined } from '@ant-design/icons';
 import Modal from 'antd/lib/modal';
 import Button from 'antd/lib/button';
-import Timeline from 'antd/lib/timeline';
-import Dropdown from 'antd/lib/dropdown';
+import Text from 'antd/lib/typography/Text';
 
-import AnnotationMenuContainer from 'containers/annotation-page/top-bar/annotation-menu';
-import {
-    MainMenuIcon, SaveIcon, UndoIcon, RedoIcon,
-} from 'icons';
+import { UndoIcon, RedoIcon } from 'icons';
+import { ActiveControl } from 'reducers';
+import { RectDrawingMethod } from 'cvat-canvas-wrapper';
+import { registerComponentShortcuts } from 'actions/shortcuts-actions';
+import AnnotationMenuComponent from 'components/annotation-page/top-bar/annotation-menu';
+import CVATTooltip from 'components/common/cvat-tooltip';
+import { ShortcutScope } from 'utils/enums';
+import { subKeyMap } from 'utils/component-subkeymap';
+import GlobalHotKeys, { KeyMap } from 'utils/mousetrap-react';
+import { finishDrawAvailable } from 'utils/drawing';
+import SaveAnnotationsButton from './save-annotations-button';
 
 interface Props {
     saving: boolean;
-    savingStatuses: string[];
     undoAction?: string;
     redoAction?: string;
-    saveShortcut: string;
     undoShortcut: string;
     redoShortcut: string;
-    onSaveAnnotation(): void;
+    drawShortcut: string;
+    activeControl: ActiveControl;
+    rectDrawingMethod?: RectDrawingMethod;
+    keyMap: KeyMap;
     onUndoClick(): void;
     onRedoClick(): void;
+    onFinishDraw(): void;
 }
+
+const componentShortcuts = {
+    UNDO: {
+        name: 'Undo action',
+        description: 'Cancel the latest action related with objects',
+        sequences: ['ctrl+z', 'command+z'],
+        scope: ShortcutScope.ANNOTATION_PAGE,
+    },
+    REDO: {
+        name: 'Redo action',
+        description: 'Cancel undo action',
+        sequences: ['ctrl+shift+z', 'command+shift+z', 'ctrl+y'],
+        scope: ShortcutScope.ANNOTATION_PAGE,
+    },
+};
+
+registerComponentShortcuts(componentShortcuts);
 
 function LeftGroup(props: Props): JSX.Element {
     const {
         saving,
-        savingStatuses,
+        keyMap,
         undoAction,
         redoAction,
-        saveShortcut,
         undoShortcut,
         redoShortcut,
-        onSaveAnnotation,
+        drawShortcut,
+        activeControl,
+        rectDrawingMethod,
         onUndoClick,
         onRedoClick,
+        onFinishDraw,
     } = props;
 
+    const includesDoneButton = finishDrawAvailable(activeControl, rectDrawingMethod);
+
+    const handlers: Record<keyof typeof componentShortcuts, (event?: KeyboardEvent) => void> = {
+        UNDO: (event: KeyboardEvent | undefined) => {
+            event?.preventDefault();
+            onUndoClick();
+        },
+        REDO: (event: KeyboardEvent | undefined) => {
+            event?.preventDefault();
+            onRedoClick();
+        },
+    };
+
     return (
-        <Col className='cvat-annotation-header-left-group'>
-            <Dropdown overlay={<AnnotationMenuContainer />}>
-                <Button type='link' className='cvat-annotation-header-button'>
-                    <Icon component={MainMenuIcon} />
-                    Menu
-                </Button>
-            </Dropdown>
-            <Button
-                title={`Save current changes ${saveShortcut}`}
-                onClick={saving ? undefined : onSaveAnnotation}
-                type='link'
-                className={saving ? 'cvat-annotation-disabled-header-button' : 'cvat-annotation-header-button'}
-            >
-                <Icon component={SaveIcon} />
-                {saving ? 'Saving...' : 'Save'}
-                <Modal title='Saving changes on the server' visible={saving} footer={[]} closable={false}>
-                    <Timeline pending={savingStatuses[savingStatuses.length - 1] || 'Pending..'}>
-                        {savingStatuses.slice(0, -1).map((status: string, id: number) => (
-                            <Timeline.Item key={id}>{status}</Timeline.Item>
-                        ))}
-                    </Timeline>
+        <>
+            <GlobalHotKeys keyMap={subKeyMap(componentShortcuts, keyMap)} handlers={handlers} />
+            { saving && (
+                <Modal
+                    open
+                    destroyOnClose
+                    className='cvat-saving-job-modal'
+                    closable={false}
+                    footer={[]}
+                >
+                    <Text>CVAT is saving your annotations, please wait </Text>
+                    <LoadingOutlined />
                 </Modal>
-            </Button>
-            <Button
-                title={`Undo: ${undoAction} ${undoShortcut}`}
-                disabled={!undoAction}
-                style={{ pointerEvents: undoAction ? 'initial' : 'none', opacity: undoAction ? 1 : 0.5 }}
-                type='link'
-                className='cvat-annotation-header-button'
-                onClick={onUndoClick}
-            >
-                <Icon component={UndoIcon} />
-                <span>Undo</span>
-            </Button>
-            <Button
-                title={`Redo: ${redoAction} ${redoShortcut}`}
-                disabled={!redoAction}
-                style={{ pointerEvents: redoAction ? 'initial' : 'none', opacity: redoAction ? 1 : 0.5 }}
-                type='link'
-                className='cvat-annotation-header-button'
-                onClick={onRedoClick}
-            >
-                <Icon component={RedoIcon} />
-                Redo
-            </Button>
-        </Col>
+            )}
+            <Col className='cvat-annotation-header-left-group'>
+                <AnnotationMenuComponent />
+                <SaveAnnotationsButton />
+                <CVATTooltip overlay={`Undo: ${undoAction} ${undoShortcut}`}>
+                    <Button
+                        style={{ pointerEvents: undoAction ? 'initial' : 'none', opacity: undoAction ? 1 : 0.5 }}
+                        type='link'
+                        className='cvat-annotation-header-undo-button cvat-annotation-header-button'
+                        onClick={onUndoClick}
+                    >
+                        <Icon component={UndoIcon} />
+                        <span>Undo</span>
+                    </Button>
+                </CVATTooltip>
+                <CVATTooltip overlay={`Redo: ${redoAction} ${redoShortcut}`}>
+                    <Button
+                        style={{ pointerEvents: redoAction ? 'initial' : 'none', opacity: redoAction ? 1 : 0.5 }}
+                        type='link'
+                        className='cvat-annotation-header-redo-button cvat-annotation-header-button'
+                        onClick={onRedoClick}
+                    >
+                        <Icon component={RedoIcon} />
+                        Redo
+                    </Button>
+                </CVATTooltip>
+                {includesDoneButton ? (
+                    <CVATTooltip overlay={`Press "${drawShortcut}" to finish`}>
+                        <Button type='link' className='cvat-annotation-header-done-button cvat-annotation-header-button' onClick={onFinishDraw}>
+                            <CheckCircleOutlined />
+                            Done
+                        </Button>
+                    </CVATTooltip>
+                ) : null}
+            </Col>
+        </>
     );
 }
 

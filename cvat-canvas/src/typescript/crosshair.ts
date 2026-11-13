@@ -1,4 +1,4 @@
-// Copyright (C) 2020 Intel Corporation
+// Copyright (C) 2020-2022 Intel Corporation
 //
 // SPDX-License-Identifier: MIT
 
@@ -22,6 +22,11 @@ export default class Crosshair {
             if (this.y) this.y.remove();
             this.x = null;
             this.y = null;
+        }
+
+        if (this.x && this.y) {
+            this.move(x, y);
+            return;
         }
 
         this.canvas = canvas;

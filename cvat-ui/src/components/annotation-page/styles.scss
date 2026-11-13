@@ -1,8 +1,24 @@
-// Copyright (C) 2020-2021 Intel Corporation
+// Copyright (C) 2020-2022 Intel Corporation
+// Copyright (C) CVAT.ai Corporation
 //
 // SPDX-License-Identifier: MIT
 
-@import '../../base.scss';
+@import 'base';
+
+.cvat-label-selector-option {
+    max-width: 100%;
+    display: inline-flex;
+    align-items: baseline;
+}
+
+.cvat-label-color-dot {
+    display: inline-block;
+    width: $grid-unit-size;
+    height: $grid-unit-size;
+    border-radius: 50%;
+    margin-right: $grid-unit-size;
+    flex: 0 0 auto;
+}
 
 .cvat-annotation-page.ant-layout {
     height: 100%;
@@ -11,12 +27,12 @@
 
 .cvat-annotation-layout-content {
     height: 100%;
+    overflow-y: clip;
 }
 
 .ant-layout-header.cvat-annotation-header {
     background-color: $background-color-2;
-    border-bottom: 1px solid $border-color-1;
-    height: 54px;
+    height: 48px;
     padding: 0;
 
     > div:first-child {
@@ -24,105 +40,71 @@
         flex: 1;
         flex-flow: unset;
     }
-}
 
-.cvat-annotation-header-left-group {
-    display: flex;
+    .ant-btn-link.cvat-annotation-header-button {
+        padding: 0;
+        width: $grid-unit-size * 6;
+        height: $grid-unit-size * 6;
+        user-select: none;
+        color: $text-color;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        margin: 0 3px;
 
-    > button:first-child {
-        filter: invert(0.9);
-        background: $background-color-1;
-        border-radius: 0;
-        width: 70px;
-    }
-}
-
-.ant-btn.cvat-annotation-header-button {
-    padding: 0;
-    width: 54px;
-    height: 54px;
-    text-align: center;
-    user-select: none;
-    color: $text-color;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    margin: 0 3px;
-
-    > span:not([role='img']) {
-        margin-left: 0;
-        font-size: 10px;
-    }
-
-    > span[role='img'] {
-        transform: scale(0.8);
-        padding: 3px;
-    }
-
-    &:hover > span[role='img'] {
-        transform: scale(0.85);
-    }
-
-    &:active > span[role='img'] {
-        transform: scale(0.8);
-    }
-
-    > * {
-        display: block;
-        line-height: 0;
-    }
-
-    &.filters-armed {
-        color: $info-icon-color;
-
-        path {
-            fill: $info-icon-color;
+        &.cvat-button-active {
+            color: $border-color-hover;
         }
-    }
-}
 
-button.cvat-predictor-button {
-    &.cvat-predictor-inprogress {
-        > span {
-            > svg {
-                fill: $inprogress-progress-color;
-            }
+        &:hover {
+            color: $text-color;
         }
-    }
 
-    &.cvat-predictor-fetching {
-        > span {
-            > svg {
-                animation-duration: 500ms;
-                animation-name: predictorBlinking;
-                animation-iteration-count: infinite;
-
-                @keyframes predictorBlinking {
-                    0% {
-                        fill: $inprogress-progress-color;
-                    }
-
-                    50% {
-                        fill: $completed-progress-color;
-                    }
-
-                    100% {
-                        fill: $inprogress-progress-color;
-                    }
-                }
-            }
-        }
-    }
-
-    &.cvat-predictor-disabled {
-        opacity: 0.5;
-
-        &:active {
-            pointer-events: none;
+        > span:not([role='img']) {
+            margin-left: 0;
+            font-size: 10px;
         }
 
         > span[role='img'] {
-            transform: scale(0.8) !important;
+            transition: $annotation-view-control-transition;
+            font-size: 20px;
+        }
+
+        &:hover > span[role='img'] {
+            transform: scale(1.1);
+        }
+
+        &:active > span[role='img'] {
+            transform: scale(1.05);
+        }
+
+        &.filters-armed {
+            color: $info-icon-color;
+
+            path {
+                fill: $info-icon-color;
+            }
+        }
+    }
+
+    .cvat-annotation-header-left-group {
+        display: flex;
+
+        > .cvat-annotation-header-button.cvat-annotation-header-menu-button {
+            width: $grid-unit-size * 9;
+            background: black;
+            color: white;
+            border-radius: $border-radius-base;
+
+            &:hover {
+                background: black;
+                color: white;
+            }
+
+            svg {
+                fill: white;
+            }
         }
     }
 }
@@ -135,7 +117,7 @@ button.cvat-predictor-button {
 }
 
 .cvat-annotation-header-player-group > div {
-    height: 54px;
+    height: 48px;
     line-height: 0;
     flex-wrap: nowrap;
 }
@@ -148,9 +130,10 @@ button.cvat-predictor-button {
     margin-right: 10px;
 
     > span {
-        font-size: 25px;
+        font-size: 20px;
         margin: 0 4px;
         color: $player-buttons-color;
+        transition: $annotation-view-control-transition;
 
         &:hover {
             transform: scale(1.1);
@@ -165,30 +148,94 @@ button.cvat-predictor-button {
 .cvat-player-controls {
     height: 100%;
     line-height: 27px;
+    padding-top: 16px;
 
     > div {
-        height: 50%;
+        height: 25%;
     }
 }
 
-.cvat-player-slider {
+.cvat-player-slider.ant-slider {
     width: 350px;
     margin: 0;
+    margin-top: $grid-unit-size * -0.5;
+
+    > .ant-slider-handle {
+        z-index: 100;
+        margin-top: 2px;
+    }
+
+    > .ant-slider-track {
+        background: none;
+    }
 
     > .ant-slider-rail {
+        height: $grid-unit-size;
         background-color: $player-slider-color;
+    }
+
+    > .ant-slider-mark {
+        z-index: 2;
+        top: -16px;
+
+        > .ant-slider-mark-text {
+            > .ant-slider-mark-chapter {
+                display: inline-block;
+                width: 2px;
+                height: 10px;
+                background-color: #ccc;
+                border-radius: 2px;
+                transition: all 0.1s ease;
+                transform-origin: center center;
+                transform: scaleX(1);
+            }
+
+            > .ant-slider-mark-chapter.active {
+                transform: scaleX(1.5);
+                background-color: #ff4136;
+            }
+        }
+    }
+
+    > .ant-slider-step > .ant-slider-dot {
+        z-index: 2;
+    }
+}
+
+.cvat-player-slider-progress {
+    width: 350px;
+    height: $grid-unit-size;
+    position: absolute;
+    top: 0;
+    pointer-events: none;
+
+    > rect {
+        transition: width 0.5s;
+        fill: #1890ff;
     }
 }
 
 .cvat-player-filename-wrapper {
-    max-width: 300px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    user-select: none;
-    word-break: break-all;
+    max-width: $grid-unit-size * 30;
+    max-height: $grid-unit-size * 3;
+    line-height: $grid-unit-size * 3;
+
+    > span {
+        display: inline-block;
+        width: 100%;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        user-select: none;
+        word-break: break-all;
+    }
 }
 
-.cvat-player-frame-url-icon {
+.cvat-player-frame-url-icon,
+.cvat-player-delete-frame,
+.cvat-player-restore-frame,
+.cvat-player-copy-frame-name-icon,
+.cvat-player-search-frame-name-icon {
     opacity: 0.7;
     color: $objects-bar-icons-color;
 
@@ -201,10 +248,31 @@ button.cvat-predictor-button {
     }
 }
 
+.cvat-player-frame-actions {
+    span:not(:first-child) {
+        margin-left: $grid-unit-size;
+    }
+}
+
 .cvat-player-frame-selector {
-    width: 5em;
+    width: unset;
     padding-right: 5px;
     margin-left: 5px;
+
+    .ant-input-number-input-wrap {
+        width: unset;
+    }
+
+    .ant-input-number-input {
+        box-sizing: content-box;
+        width: var(--frame-input-width, 6ch);
+        min-width: 6ch;
+        max-width: 10ch;
+    }
+}
+
+.cvat-player-actions {
+    margin-left: $grid-unit-size;
 }
 
 .cvat-annotation-header-right-group {
@@ -212,9 +280,11 @@ button.cvat-predictor-button {
     justify-content: flex-end;
 
     > div {
-        display: block;
-        height: 54px;
-        margin-right: 15px;
+        display: flex;
+        height: 48px;
+        align-items: center;
+        justify-content: center;
+        padding-right: 8px;
     }
 }
 
@@ -224,7 +294,7 @@ button.cvat-predictor-button {
 
 .cvat-job-info-modal-window {
     > div {
-        margin-top: 10px;
+        margin-top: $grid-unit-size;
     }
 
     > div:nth-child(1) {
@@ -254,37 +324,51 @@ button.cvat-predictor-button {
             }
 
             .ant-table-thead {
+                .cvat-info-circle-icon {
+                    margin-left: $grid-unit-size;
+                }
+
                 > tr > th {
-                    padding: 5px 5px;
+                    padding: $grid-unit-size 0 $grid-unit-size $grid-unit-size * 0.5;
                 }
             }
         }
     }
 }
 
-.ant-menu.cvat-annotation-menu {
+.ant-dropdown-menu.cvat-annotation-menu {
     box-shadow: $box-shadow-base;
 
-    > li:hover {
-        background-color: $hover-menu-color;
+    li.ant-dropdown-menu-item {
+        width: $grid-unit-size * 30;
+        height: $grid-unit-size * 5;
+        line-height: $grid-unit-size * 5;
     }
 
-    .ant-menu-submenu-title {
-        margin: 0;
-        width: 15em;
+    li.ant-dropdown-menu-submenu {
+        width: $grid-unit-size * 30;
+        height: $grid-unit-size * 5;
+
+        .ant-dropdown-menu-submenu-title {
+            width: $grid-unit-size * 31;
+            line-height: $grid-unit-size * 5;
+            padding-top: 0;
+        }
     }
 }
 
 // TODO: Move canvas from standard workspace and create its own .scss
 .cvat-canvas-context-menu {
-    opacity: 0.6;
+    opacity: 0.8;
     position: fixed;
     width: 300px;
     z-index: 10;
     max-height: 50%;
     overflow-y: auto;
 
-    &:hover {
+    &:hover,
+    &:focus-within,
+    &:has(.ant-select-open) {
         opacity: 1;
     }
 }
@@ -295,7 +379,7 @@ button.cvat-predictor-button {
     position: fixed;
     z-index: 10;
     background-color: #fff;
-    border-radius: 4px;
+    border-radius: $border-radius-base;
 
     &:hover {
         opacity: 1;
@@ -308,8 +392,8 @@ button.cvat-predictor-button {
     bottom: 0;
     left: 50%;
     opacity: 0.5;
-    border-radius: 6px 6px 0 0;
-    border: 1px solid $border-color-3;
+    border-radius: $border-radius-base $border-radius-base 0 0;
+    border: 1px solid $border-color-1;
     z-index: 100;
     padding: 4px 12px;
 
@@ -325,7 +409,7 @@ button.cvat-predictor-button {
 .cvat-canvas-image-setups-content {
     background: $background-color-2;
     padding: 8px;
-    border-radius: 6px;
+    border-radius: $border-radius-base;
     opacity: 0.9;
 }
 
@@ -373,50 +457,102 @@ button.cvat-predictor-button {
     width: 100%;
 }
 
-.cvat-canvas-z-axis-wrapper {
+.cvat-canvas-layer-stack-trigger {
     position: absolute;
     background: $background-color-2;
     bottom: 10px;
     right: 10px;
-    height: 150px;
+    width: $grid-unit-size * 5;
+    height: $grid-unit-size * 5;
     z-index: 100;
-    border-radius: 6px;
-    opacity: 0.5;
-    border: 1px solid $border-color-3;
-    display: flex;
-    flex-direction: column;
-    justify-content: space-between;
-    padding: 3px;
+    border-radius: $border-radius-base;
+    border: 1px solid $border-color-1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    color: $objects-bar-icons-color;
+    cursor: pointer;
+    font-size: $grid-unit-size * 3.25;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 12%);
+    opacity: 0.76;
+    line-height: 1;
+    transition:
+        background-color $box-shadow-transition,
+        border-color $box-shadow-transition,
+        box-shadow $box-shadow-transition,
+        opacity $box-shadow-transition;
 
-    &:hover {
+    &:hover,
+    &:focus-visible {
+        border-color: rgba($color: $completed-progress-color, $alpha: 45%);
+        box-shadow: 0 3px 10px rgba(0, 0, 0, 18%);
         opacity: 1;
     }
 
-    > .ant-slider {
-        height: 75%;
-        margin: 5px 3px;
+    &:active {
+        box-shadow: 0 1px 4px rgba(0, 0, 0, 16%);
+        opacity: 0.82;
+    }
 
-        > .ant-slider-rail {
-            background-color: #979797;
+    > .anticon {
+        font-size: inherit;
+        line-height: 1;
+
+        > svg {
+            width: 1em;
+            height: 1em;
         }
 
-        > .ant-slider-handle {
-            transform: none !important;
+        .cvat-layer-stack-icon-top {
+            color: $completed-progress-color;
+            fill: rgba($color: $completed-progress-color, $alpha: 16%);
+        }
+
+        svg {
+            fill: none;
+            stroke: currentColor;
+            stroke-linejoin: round;
+            stroke-width: 2;
         }
     }
 
-    > span[role='img'] {
-        opacity: 0.7;
-        color: $objects-bar-icons-color;
+    .cvat-canvas-layer-stack-trigger-layer {
+        position: absolute;
+        right: 3px;
+        bottom: 2px;
+        min-width: 12px;
+        max-width: 20px;
+        overflow: hidden;
+        color: $completed-progress-color;
+        font-size: 16px;
+        line-height: 16px;
+        text-align: center;
+        text-overflow: ellipsis;
+    }
+}
+
+.cvat-player-chapter-menu-wrapper {
+    max-height: 37 * $grid-unit-size;
+    max-width: 22 * $grid-unit-size;
+    overflow: auto;
+}
+
+.cvat-player-chapter-menu-list {
+    .cvat-player-chapter-menu-list-item {
+        margin-right: 2px;
 
         &:hover {
-            opacity: 1;
-        }
-
-        &:active {
-            opacity: 0.7;
+            transform: translateX(2px);
+            box-shadow: 0 2px 5px rgba(0,0,0,10%);
+            background-color: #f5f5f5;
         }
     }
+
+}
+
+.cvat-player-chapters-menu-button svg {
+    transform: scale(0.8);
 }
 
 .cvat-annotations-filters-input.ant-select {
@@ -435,7 +571,9 @@ button.cvat-predictor-button {
 .cvat-player-previous-filtered-inlined-button,
 .cvat-player-next-filtered-inlined-button,
 .cvat-player-previous-empty-inlined-button,
-.cvat-player-next-empty-inlined-button {
+.cvat-player-next-empty-inlined-button,
+.cvat-player-previous-chapter-inlined-button,
+.cvat-player-next-chapter-inlined-button {
     color: $player-buttons-color;
 
     &:not(:first-child) {
@@ -447,22 +585,12 @@ button.cvat-predictor-button {
     }
 }
 
-.cvat-request-review-dialog {
-    > .ant-modal-content > .ant-modal-body {
-        > div:nth-child(2) {
-            margin-top: $grid-unit-size * 2;
-        }
-
-        > div:nth-child(3) {
-            margin-top: $grid-unit-size * 2;
-        }
-    }
-}
-
 .cvat-submit-review-dialog {
-    > .ant-modal-content > .ant-modal-body {
-        > div:nth-child(2) > div:nth-child(2) {
-            .ant-col {
+    .ant-modal-body {
+        > div.ant-row:nth-child(2) {
+            > .ant-col {
+                width: 100%;
+
                 > div:nth-child(2) {
                     margin-top: $grid-unit-size * 2;
                     margin-bottom: $grid-unit-size * 2;
@@ -476,23 +604,71 @@ button.cvat-predictor-button {
     .ant-modal-body {
         padding: 1px;
 
-        .recently-used-wrapper {
+        .cvat-recently-used-filters-wrapper {
             padding-top: $grid-unit-size * 2;
         }
 
-        .query-builder-container {
-            .query-builder > :first-child {
-                padding-right: 0;
-            }
-
-            .group-or-rule {
-                border-radius: $grid-unit-size / 4;
-            }
-
-            .group {
-                background: rgba(216, 233, 250, 0.5);
-                border: 1px solid #d3e0ec;
-            }
+        .ant-typography {
+            display: block;
+            padding: $grid-unit-size * 2 $grid-unit-size * 3 $grid-unit-size  $grid-unit-size * 2;
         }
     }
+}
+
+.cvat-submenu-current-job-state-item {
+    &::after {
+        content: ' \2713';
+        margin-left: $grid-unit-size;
+        float: right;
+    }
+
+    font-weight: bold;
+}
+
+.cvat-notification-continue-job-button {
+    padding: 0;
+
+    > span {
+        &::before {
+            content: '\00a0';
+        }
+
+        &::after {
+            content: '\00a0';
+        }
+    }
+}
+
+.cvat-saving-job-modal {
+    span.anticon {
+        margin-left: $grid-unit-size * 2;
+    }
+
+    .ant-modal-footer {
+        margin: 0;
+    }
+}
+
+.cvat-frame-search-selector {
+    width: 100%;
+}
+
+.cvat-frame-search-item {
+    display: flex;
+    justify-content: start;
+    overflow: hidden;
+    width: 100%;
+}
+
+.cvat-frame-search-item-number {
+    margin-right: $grid-unit-size;
+    white-space: nowrap;
+}
+
+.cvat-frame-search-item-name {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    direction: rtl;
+    unicode-bidi: plaintext;
 }

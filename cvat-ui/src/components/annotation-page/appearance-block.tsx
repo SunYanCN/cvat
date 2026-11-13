@@ -1,4 +1,5 @@
-// Copyright (C) 2020-2021 Intel Corporation
+// Copyright (C) 2020-2022 Intel Corporation
+// Copyright (C) CVAT.ai Corporation
 //
 // SPDX-License-Identifier: MIT
 
@@ -14,11 +15,10 @@ import Button from 'antd/lib/button';
 
 import ColorPicker from 'components/annotation-page/standard-workspace/objects-side-bar/color-picker';
 import { ColorizeIcon } from 'icons';
-import { ColorBy, CombinedState } from 'reducers/interfaces';
-import {
-    collapseAppearance as collapseAppearanceAction,
-    updateTabContentHeight as updateTabContentHeightAction,
-} from 'actions/annotation-actions';
+import { ColorBy, CombinedState, Workspace } from 'reducers';
+import { DimensionType, Job } from 'cvat-core-wrapper';
+import { OrientationVisibility } from 'cvat-canvas3d-wrapper';
+import { collapseAppearance as collapseAppearanceAction } from 'actions/annotation-actions';
 import {
     changeShapesColorBy as changeShapesColorByAction,
     changeShapesOpacity as changeShapesOpacityAction,
@@ -26,7 +26,29 @@ import {
     changeShapesOutlinedBorders as changeShapesOutlinedBordersAction,
     changeShowBitmap as changeShowBitmapAction,
     changeShowProjections as changeShowProjectionsAction,
+    changeOrientationVisibility as changeOrientationVisibilityAction,
 } from 'actions/settings-actions';
+import { registerComponentShortcuts } from 'actions/shortcuts-actions';
+import GlobalHotKeys, { KeyMap } from 'utils/mousetrap-react';
+import { ShortcutScope } from 'utils/enums';
+import { subKeyMap } from 'utils/component-subkeymap';
+
+const componentShortcuts = {
+    SWITCH_COLOR_BY_APPEARANCE: {
+        name: 'Switch objects appearance setting "Color by"',
+        description: 'Objects color mode may be by object, label, or group',
+        sequences: [],
+        scope: ShortcutScope.ANNOTATION_PAGE,
+    },
+    TOGGLE_SHOW_BITMAP_APPEARANCE: {
+        name: 'Switch objects appearance setting "Show bitmap"',
+        description: 'Show or hide the bitmap layer on the canvas',
+        sequences: [],
+        scope: ShortcutScope.ANNOTATION_PAGE,
+    },
+};
+
+registerComponentShortcuts(componentShortcuts);
 
 interface StateToProps {
     appearanceCollapsed: boolean;
@@ -37,41 +59,37 @@ interface StateToProps {
     outlineColor: string;
     showBitmap: boolean;
     showProjections: boolean;
+    orientationVisibility: OrientationVisibility;
+    workspace: Workspace;
+    jobInstance: Job;
+    keyMap: KeyMap;
 }
 
 interface DispatchToProps {
     collapseAppearance(): void;
-    changeShapesColorBy(event: RadioChangeEvent): void;
+    changeShapesColorBy(colorBy: ColorBy): void;
     changeShapesOpacity(value: number): void;
     changeSelectedShapesOpacity(value: number): void;
     changeShapesOutlinedBorders(outlined: boolean, color: string): void;
-    changeShowBitmap(event: CheckboxChangeEvent): void;
+    changeShowBitmap(showBitmap: boolean): void;
     changeShowProjections(event: CheckboxChangeEvent): void;
-}
-
-export function computeHeight(): number {
-    const [sidebar] = window.document.getElementsByClassName('cvat-objects-sidebar');
-    const [appearance] = window.document.getElementsByClassName('cvat-objects-appearance-collapse');
-    const [tabs] = Array.from(window.document.querySelectorAll('.cvat-objects-sidebar-tabs > .ant-tabs-nav'));
-
-    if (sidebar && appearance && tabs) {
-        const maxHeight = sidebar ? sidebar.clientHeight : 0;
-        const appearanceHeight = appearance ? appearance.clientHeight : 0;
-        const tabsHeight = tabs ? tabs.clientHeight : 0;
-        return maxHeight - appearanceHeight - tabsHeight;
-    }
-
-    return 0;
+    changeOrientationVisibility(orientationVisibility: Partial<OrientationVisibility>): void;
 }
 
 function mapStateToProps(state: CombinedState): StateToProps {
     const {
-        annotation: { appearanceCollapsed },
+        annotation: {
+            appearanceCollapsed,
+            workspace,
+            job: { instance: jobInstance },
+        },
         settings: {
             shapes: {
                 colorBy, opacity, selectedOpacity, outlined, outlineColor, showBitmap, showProjections,
+                orientationVisibility,
             },
         },
+        shortcuts: { keyMap },
     } = state;
 
     return {
@@ -83,6 +101,10 @@ function mapStateToProps(state: CombinedState): StateToProps {
         outlineColor,
         showBitmap,
         showProjections,
+        workspace,
+        orientationVisibility,
+        jobInstance: jobInstance as Job,
+        keyMap,
     };
 }
 
@@ -90,22 +112,9 @@ function mapDispatchToProps(dispatch: Dispatch<AnyAction>): DispatchToProps {
     return {
         collapseAppearance(): void {
             dispatch(collapseAppearanceAction());
-            const [collapser] = window.document.getElementsByClassName('cvat-objects-appearance-collapse');
-
-            if (collapser) {
-                const listener = (event: Event): void => {
-                    if ((event as TransitionEvent).propertyName === 'height') {
-                        const height = computeHeight();
-                        dispatch(updateTabContentHeightAction(height));
-                        collapser.removeEventListener('transitionend', listener);
-                    }
-                };
-
-                collapser.addEventListener('transitionend', listener);
-            }
         },
-        changeShapesColorBy(event: RadioChangeEvent): void {
-            dispatch(changeShapesColorByAction(event.target.value));
+        changeShapesColorBy(colorBy: ColorBy): void {
+            dispatch(changeShapesColorByAction(colorBy));
         },
         changeShapesOpacity(value: number): void {
             dispatch(changeShapesOpacityAction(value));
@@ -116,11 +125,14 @@ function mapDispatchToProps(dispatch: Dispatch<AnyAction>): DispatchToProps {
         changeShapesOutlinedBorders(outlined: boolean, color: string): void {
             dispatch(changeShapesOutlinedBordersAction(outlined, color));
         },
-        changeShowBitmap(event: CheckboxChangeEvent): void {
-            dispatch(changeShowBitmapAction(event.target.checked));
+        changeShowBitmap(showBitmap: boolean): void {
+            dispatch(changeShowBitmapAction(showBitmap));
         },
         changeShowProjections(event: CheckboxChangeEvent): void {
             dispatch(changeShowProjectionsAction(event.target.checked));
+        },
+        changeOrientationVisibility(orientationVisibility: Partial<OrientationVisibility>): void {
+            dispatch(changeOrientationVisibilityAction(orientationVisibility));
         },
     };
 }
@@ -137,6 +149,7 @@ function AppearanceBlock(props: Props): JSX.Element {
         outlineColor,
         showBitmap,
         showProjections,
+        orientationVisibility,
         collapseAppearance,
         changeShapesColorBy,
         changeShapesOpacity,
@@ -144,85 +157,132 @@ function AppearanceBlock(props: Props): JSX.Element {
         changeShapesOutlinedBorders,
         changeShowBitmap,
         changeShowProjections,
+        changeOrientationVisibility,
+        jobInstance,
+        keyMap,
     } = props;
+
+    const is2D = jobInstance.dimension === DimensionType.DIMENSION_2D;
+    const is3D = jobInstance.dimension === DimensionType.DIMENSION_3D;
+    const nextColorBy = {
+        [ColorBy.LABEL]: ColorBy.INSTANCE,
+        [ColorBy.INSTANCE]: ColorBy.GROUP,
+        [ColorBy.GROUP]: ColorBy.LABEL,
+    };
+
+    const handlers: Record<keyof typeof componentShortcuts, (event?: KeyboardEvent) => void> = {
+        SWITCH_COLOR_BY_APPEARANCE: (event: KeyboardEvent | undefined) => {
+            event?.preventDefault();
+            changeShapesColorBy(nextColorBy[colorBy]);
+        },
+        TOGGLE_SHOW_BITMAP_APPEARANCE: (event: KeyboardEvent | undefined) => {
+            if (is2D) {
+                event?.preventDefault();
+                changeShowBitmap(!showBitmap);
+            }
+        },
+    };
 
     return (
         <Collapse
             onChange={collapseAppearance}
             activeKey={appearanceCollapsed ? [] : ['appearance']}
             className='cvat-objects-appearance-collapse'
-        >
-            <Collapse.Panel
-                header={(
+            items={[{
+                label: (
                     <Text strong className='cvat-objects-appearance-collapse-header'>
                         Appearance
                     </Text>
-                )}
-                key='appearance'
-            >
-                <div className='cvat-objects-appearance-content'>
-                    <Text type='secondary'>Color by</Text>
-                    <Radio.Group
-                        className='cvat-appearance-color-by-radio-group'
-                        value={colorBy}
-                        onChange={changeShapesColorBy}
-                    >
-                        <Radio.Button value={ColorBy.LABEL}>{ColorBy.LABEL}</Radio.Button>
-                        <Radio.Button value={ColorBy.INSTANCE}>{ColorBy.INSTANCE}</Radio.Button>
-                        <Radio.Button value={ColorBy.GROUP}>{ColorBy.GROUP}</Radio.Button>
-                    </Radio.Group>
-                    <Text type='secondary'>Opacity</Text>
-                    <Slider
-                        className='cvat-appearance-opacity-slider'
-                        onChange={changeShapesOpacity}
-                        value={opacity}
-                        min={0}
-                        max={100}
-                    />
-                    <Text type='secondary'>Selected opacity</Text>
-                    <Slider
-                        className='cvat-appearance-selected-opacity-slider'
-                        onChange={changeSelectedShapesOpacity}
-                        value={selectedOpacity}
-                        min={0}
-                        max={100}
-                    />
-                    <Checkbox
-                        className='cvat-appearance-outlinded-borders-checkbox'
-                        onChange={(event: CheckboxChangeEvent) => {
-                            changeShapesOutlinedBorders(event.target.checked, outlineColor);
-                        }}
-                        checked={outlined}
-                    >
-                        Outlined borders
-                        <ColorPicker
-                            onChange={(color) => changeShapesOutlinedBorders(outlined, color)}
-                            value={outlineColor}
-                            placement='top'
-                            resetVisible={false}
+                ),
+                key: 'appearance',
+                children: (
+                    <div className='cvat-objects-appearance-content cvat-appearance-block'>
+                        <GlobalHotKeys keyMap={subKeyMap(componentShortcuts, keyMap)} handlers={handlers} />
+                        <Text type='secondary'>Color by</Text>
+                        <Radio.Group
+                            className='cvat-appearance-color-by-radio-group'
+                            value={colorBy}
+                            onChange={(event: RadioChangeEvent) => changeShapesColorBy(event.target.value)}
                         >
-                            <Button className='cvat-appearance-outlined-borders-button' type='link' shape='circle'>
-                                <ColorizeIcon />
-                            </Button>
-                        </ColorPicker>
-                    </Checkbox>
-                    <Checkbox
-                        className='cvat-appearance-bitmap-checkbox'
-                        onChange={changeShowBitmap}
-                        checked={showBitmap}
-                    >
-                        Show bitmap
-                    </Checkbox>
-                    <Checkbox
-                        className='cvat-appearance-cuboid-projections-checkbox'
-                        onChange={changeShowProjections}
-                        checked={showProjections}
-                    >
-                        Show projections
-                    </Checkbox>
-                </div>
-            </Collapse.Panel>
-        </Collapse>
+                            {Object.keys(nextColorBy).map((val) => (
+                                <Radio.Button value={val} key={val}>{val}</Radio.Button>
+                            ))}
+                        </Radio.Group>
+                        <Text type='secondary'>Opacity</Text>
+                        <Slider
+                            className='cvat-appearance-opacity-slider'
+                            onChange={changeShapesOpacity}
+                            value={opacity}
+                            min={0}
+                            max={100}
+                        />
+                        <Text type='secondary'>Selected opacity</Text>
+                        <Slider
+                            className='cvat-appearance-selected-opacity-slider'
+                            onChange={changeSelectedShapesOpacity}
+                            value={selectedOpacity}
+                            min={0}
+                            max={100}
+                        />
+                        <Checkbox
+                            className='cvat-appearance-outlinded-borders-checkbox'
+                            onChange={(event: CheckboxChangeEvent) => {
+                                changeShapesOutlinedBorders(event.target.checked, outlineColor);
+                            }}
+                            checked={outlined}
+                        >
+                            Outlined borders
+                            <ColorPicker
+                                onChange={(color) => changeShapesOutlinedBorders(outlined, color)}
+                                value={outlineColor}
+                                placement='top'
+                                resetVisible={false}
+                            >
+                                <Button className='cvat-appearance-outlined-borders-button' type='link' shape='circle'>
+                                    <ColorizeIcon />
+                                </Button>
+                            </ColorPicker>
+                        </Checkbox>
+                        {is3D && (
+                            <div className='cvat-appearance-cuboid-orientation-checkboxes'>
+                                <Checkbox
+                                    checked={orientationVisibility.x}
+                                    onChange={(event: CheckboxChangeEvent) => {
+                                        changeOrientationVisibility({
+                                            x: event.target.checked,
+                                            y: event.target.checked,
+                                            z: event.target.checked,
+                                        });
+                                    }}
+                                >
+                                    Cuboid orientation
+                                </Checkbox>
+                            </div>
+                        )}
+                        {is2D && (
+                            <Checkbox
+                                className='cvat-appearance-bitmap-checkbox'
+                                onChange={(event: CheckboxChangeEvent) => {
+                                    changeShowBitmap(event.target.checked);
+                                }}
+                                checked={showBitmap}
+                            >
+                                Show bitmap
+                            </Checkbox>
+                        )}
+                        {is2D && (
+                            <Checkbox
+                                className='cvat-appearance-cuboid-projections-checkbox'
+                                onChange={changeShowProjections}
+                                checked={showProjections}
+                            >
+                                Show projections
+                            </Checkbox>
+                        )}
+                    </div>
+                ),
+            }]}
+        />
     );
 }
 

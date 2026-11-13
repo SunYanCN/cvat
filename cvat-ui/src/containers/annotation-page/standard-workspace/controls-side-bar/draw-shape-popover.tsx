@@ -1,15 +1,23 @@
-// Copyright (C) 2020-2021 Intel Corporation
+// Copyright (C) 2020-2022 Intel Corporation
+// Copyright (C) CVAT.ai Corporation
 //
 // SPDX-License-Identifier: MIT
 
 import React from 'react';
 import { connect } from 'react-redux';
 import { RadioChangeEvent } from 'antd/lib/radio';
+import message from 'antd/lib/message';
+import notification from 'antd/lib/notification';
 
-import { CombinedState, ShapeType, ObjectType } from 'reducers/interfaces';
+import { CombinedState } from 'reducers';
 import { rememberObject } from 'actions/annotation-actions';
 import { Canvas, RectDrawingMethod, CuboidDrawingMethod } from 'cvat-canvas-wrapper';
+import { Canvas3d } from 'cvat-canvas3d-wrapper';
 import DrawShapePopoverComponent from 'components/annotation-page/standard-workspace/controls-side-bar/draw-shape-popover';
+import {
+    Label, ObjectType, ShapeType, LabelType,
+} from 'cvat-core-wrapper';
+import openCVWrapper from 'utils/opencv-wrapper/opencv-wrapper';
 
 interface OwnProps {
     shapeType: ShapeType;
@@ -22,14 +30,17 @@ interface DispatchToProps {
         objectType: ObjectType,
         points?: number,
         rectDrawingMethod?: RectDrawingMethod,
+        cuboidDrawingMethod?: CuboidDrawingMethod,
+        simplifyPoly?: boolean,
     ): void;
 }
 
 interface StateToProps {
     normalizedKeyMap: Record<string, string>;
-    canvasInstance: Canvas;
+    canvasInstance: Canvas | Canvas3d;
     shapeType: ShapeType;
     labels: any[];
+    jobInstance: any;
 }
 
 function mapDispatchToProps(dispatch: any): DispatchToProps {
@@ -40,6 +51,8 @@ function mapDispatchToProps(dispatch: any): DispatchToProps {
             objectType: ObjectType,
             points?: number,
             rectDrawingMethod?: RectDrawingMethod,
+            cuboidDrawingMethod?: CuboidDrawingMethod,
+            simplifyPoly?: boolean,
         ): void {
             dispatch(
                 rememberObject({
@@ -48,6 +61,8 @@ function mapDispatchToProps(dispatch: any): DispatchToProps {
                     activeLabelID: labelID,
                     activeNumOfPoints: points,
                     activeRectDrawingMethod: rectDrawingMethod,
+                    activeCuboidDrawingMethod: cuboidDrawingMethod,
+                    activeSimplifyPoly: simplifyPoly,
                 }),
             );
         },
@@ -58,16 +73,17 @@ function mapStateToProps(state: CombinedState, own: OwnProps): StateToProps {
     const {
         annotation: {
             canvas: { instance: canvasInstance },
-            job: { labels },
+            job: { labels, instance: jobInstance },
         },
         shortcuts: { normalizedKeyMap },
     } = state;
 
     return {
         ...own,
-        canvasInstance,
+        canvasInstance: canvasInstance as Canvas,
         labels,
         normalizedKeyMap,
+        jobInstance,
     };
 }
 
@@ -77,54 +93,111 @@ interface State {
     rectDrawingMethod?: RectDrawingMethod;
     cuboidDrawingMethod?: CuboidDrawingMethod;
     numberOfPoints?: number;
-    selectedLabelID: number;
+    selectedLabelID: number | null;
+    simplifyPoly: boolean;
 }
 
 class DrawShapePopoverContainer extends React.PureComponent<Props, State> {
     private minimumPoints = 3;
+    private satisfiedLabels: Label[];
+
+    private isPolyShape: boolean;
 
     constructor(props: Props) {
         super(props);
 
         const { shapeType } = props;
-        const defaultLabelID = props.labels.length ? props.labels[0].id : null;
+        this.isPolyShape = [ShapeType.POLYGON, ShapeType.POLYLINE].includes(shapeType);
+        this.satisfiedLabels = props.labels.filter((label: Label) => {
+            if (shapeType === ShapeType.SKELETON) {
+                return label.type === LabelType.SKELETON;
+            }
+
+            return ['any', shapeType].includes(label.type as string);
+        });
+
+        const defaultLabelID = this.satisfiedLabels.length ? this.satisfiedLabels[0].id as number : null;
         const defaultRectDrawingMethod = RectDrawingMethod.CLASSIC;
         const defaultCuboidDrawingMethod = CuboidDrawingMethod.CLASSIC;
         this.state = {
             selectedLabelID: defaultLabelID,
-            rectDrawingMethod: shapeType === ShapeType.RECTANGLE ? defaultRectDrawingMethod : undefined,
+            rectDrawingMethod: [ShapeType.RECTANGLE, ShapeType.ELLIPSE].includes(shapeType) ?
+                defaultRectDrawingMethod : undefined,
             cuboidDrawingMethod: shapeType === ShapeType.CUBOID ? defaultCuboidDrawingMethod : undefined,
+            simplifyPoly: false,
         };
 
         if (shapeType === ShapeType.POLYGON) {
             this.minimumPoints = 3;
-        }
-        if (shapeType === ShapeType.POLYLINE) {
+        } else if (shapeType === ShapeType.POLYLINE) {
             this.minimumPoints = 2;
-        }
-        if (shapeType === ShapeType.POINTS) {
+        } else if (shapeType === ShapeType.POINTS) {
             this.minimumPoints = 1;
         }
     }
 
-    private onDraw(objectType: ObjectType): void {
-        const { canvasInstance, shapeType, onDrawStart } = this.props;
+    private async initializeOpenCV(): Promise<boolean> {
+        if (openCVWrapper.isInitialized) {
+            return true;
+        }
+
+        const hide = message.loading('Initializing OpenCV for rotated shape drawing...', 0);
+        try {
+            await openCVWrapper.initialize(() => {});
+            return true;
+        } catch (error: any) {
+            notification.error({
+                message: 'Could not initialize OpenCV',
+                description: error.toString(),
+            });
+            return false;
+        } finally {
+            hide();
+        }
+    }
+
+    private async onDraw(objectType: ObjectType): Promise<void> {
+        const {
+            canvasInstance, shapeType, onDrawStart, labels,
+        } = this.props;
 
         const {
-            rectDrawingMethod, cuboidDrawingMethod, numberOfPoints, selectedLabelID,
+            rectDrawingMethod, cuboidDrawingMethod, numberOfPoints, selectedLabelID, simplifyPoly,
         } = this.state;
+        const effectiveSimplifyPoly = this.isPolyShape && typeof numberOfPoints !== 'undefined' ? false : simplifyPoly;
+
+        if (rectDrawingMethod === RectDrawingMethod.ROTATED_POINTS && !(await this.initializeOpenCV())) {
+            return;
+        }
 
         canvasInstance.cancel();
-        canvasInstance.draw({
-            enabled: true,
-            rectDrawingMethod,
-            cuboidDrawingMethod,
-            numberOfPoints,
-            shapeType,
-            crosshair: [ShapeType.RECTANGLE, ShapeType.CUBOID].includes(shapeType),
-        });
 
-        onDrawStart(shapeType, selectedLabelID, objectType, numberOfPoints, rectDrawingMethod);
+        const selectedLabel = labels.find((label) => label.id === selectedLabelID);
+        if (selectedLabel) {
+            canvasInstance.draw({
+                enabled: true,
+                rectDrawingMethod,
+                rotatedShapeFitter: rectDrawingMethod === RectDrawingMethod.ROTATED_POINTS ?
+                    openCVWrapper.contours : undefined,
+                cuboidDrawingMethod,
+                numberOfPoints,
+                shapeType,
+                simplifyPoly: effectiveSimplifyPoly,
+                skeletonSVG: selectedLabel && selectedLabel.type === ShapeType.SKELETON ?
+                    selectedLabel.structure.svg : undefined,
+                crosshair: [ShapeType.RECTANGLE, ShapeType.CUBOID, ShapeType.ELLIPSE].includes(shapeType),
+            });
+
+            onDrawStart(
+                shapeType,
+                selectedLabel.id,
+                objectType,
+                numberOfPoints,
+                rectDrawingMethod,
+                cuboidDrawingMethod,
+                effectiveSimplifyPoly,
+            );
+        }
     }
 
     private onChangeRectDrawingMethod = (event: RadioChangeEvent): void => {
@@ -148,41 +221,52 @@ class DrawShapePopoverContainer extends React.PureComponent<Props, State> {
     };
 
     private onChangePoints = (value: number | undefined): void => {
-        this.setState({
-            numberOfPoints: value,
+        this.setState((prevState) => {
+            const { simplifyPoly } = prevState;
+            return {
+                numberOfPoints: value,
+                simplifyPoly: this.isPolyShape && typeof value !== 'undefined' ? false : simplifyPoly,
+            };
         });
     };
 
-    private onChangeLabel = (value: any): void => {
-        this.setState({
-            selectedLabelID: value.id,
-        });
+    private onChangeLabel = (value: Label): void => {
+        this.setState({ selectedLabelID: value.id as number });
+    };
+
+    private onChangeSimplifyPoly = (value: boolean): void => {
+        const { numberOfPoints } = this.state;
+        if (this.isPolyShape && typeof numberOfPoints !== 'undefined' && value) {
+            return;
+        }
+
+        this.setState({ simplifyPoly: value });
     };
 
     public render(): JSX.Element {
+        const { satisfiedLabels } = this;
+        const { normalizedKeyMap, shapeType, jobInstance } = this.props;
         const {
-            rectDrawingMethod, cuboidDrawingMethod, selectedLabelID, numberOfPoints,
+            rectDrawingMethod, cuboidDrawingMethod, selectedLabelID, numberOfPoints, simplifyPoly,
         } = this.state;
-
-        const {
-            normalizedKeyMap, labels, shapeType, canvasInstance,
-        } = this.props;
 
         return (
             <DrawShapePopoverComponent
-                canvasInstance={canvasInstance}
-                labels={labels}
+                jobInstance={jobInstance}
+                labels={satisfiedLabels}
                 shapeType={shapeType}
                 minimumPoints={this.minimumPoints}
                 selectedLabelID={selectedLabelID}
                 numberOfPoints={numberOfPoints}
                 rectDrawingMethod={rectDrawingMethod}
                 cuboidDrawingMethod={cuboidDrawingMethod}
-                repeatShapeShortcut={normalizedKeyMap.SWITCH_DRAW_MODE}
+                simplifyPoly={simplifyPoly}
+                repeatShapeShortcut={normalizedKeyMap.SWITCH_DRAW_MODE_STANDARD_CONTROLS}
                 onChangeLabel={this.onChangeLabel}
                 onChangePoints={this.onChangePoints}
                 onChangeRectDrawingMethod={this.onChangeRectDrawingMethod}
                 onChangeCuboidDrawingMethod={this.onChangeCuboidDrawingMethod}
+                onChangeSimplifyPoly={this.onChangeSimplifyPoly}
                 onDrawTrack={this.onDrawTrack}
                 onDrawShape={this.onDrawShape}
             />

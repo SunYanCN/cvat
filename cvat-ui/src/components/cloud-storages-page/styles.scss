@@ -1,0 +1,109 @@
+// Copyright (C) 2021-2022 Intel Corporation
+// Copyright (C) CVAT.ai Corporation
+//
+// SPDX-License-Identifier: MIT
+
+@import 'base';
+
+.cvat-cloud-storages-page {
+    @include cvat-resource-page;
+
+    .ant-spin {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+    }
+}
+
+.cvat-empty-cloud-storages-list-icon {
+    font-size: $grid-unit-size * 14;
+    opacity: 0.5;
+    margin-bottom: $grid-unit-size * 2;
+}
+
+.cvat-cloud-storages-list-top-bar {
+    margin-bottom: $grid-unit-size;
+
+    > div {
+        display: flex;
+        justify-content: space-between;
+
+        > .cvat-cloudstorages-page-filters-wrapper {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            width: 100%;
+
+            > div {
+                > *:not(:last-child) {
+                    margin-right: $grid-unit-size;
+                }
+
+                display: flex;
+                margin-right: $grid-unit-size * 4;
+            }
+
+            .cvat-cloudstorages-page-tasks-search-bar {
+                width: $grid-unit-size * 32;
+            }
+        }
+    }
+}
+
+.cvat-cloud-storages-list {
+    display: flex;
+    flex-wrap: wrap;
+    overflow-y: auto;
+}
+
+.cvat-empty-cloud-storages-list {
+    .ant-empty {
+        top: 50%;
+        left: 50%;
+        position: absolute;
+        transform: translate(-50%, -50%);
+    }
+}
+
+.cvat-cloud-storage-item {
+    div.ant-typography {
+        margin-bottom: 0;
+    }
+
+    .cvat-cloud-storage-status {
+        position: absolute;
+        top: $grid-unit-size;
+        right: $grid-unit-size;
+        pointer-events: auto;
+    }
+
+    .cvat-cloud-storage-title {
+        display: flex;
+        align-items: center;
+        gap: $grid-unit-size;
+        min-width: 0;
+
+        .ant-typography {
+            flex: 0 1 auto;
+            min-width: 0;
+        }
+    }
+
+    .cvat-cloud-storage-description-icon {
+        flex: none;
+        width: auto;
+        font-size: $grid-unit-size * 2;
+        color: $text-color-secondary;
+    }
+
+    .cvat-cloud-storage-status-indicator {
+        display: flex;
+        align-items: center;
+
+        .ant-badge-status-dot {
+            width: $grid-unit-size * 1.5;
+            height: $grid-unit-size * 1.5;
+            box-shadow: 0 0 0 2px $background-color-1, 0 1px 4px rgba(0, 0, 0, 35%);
+        }
+    }
+}

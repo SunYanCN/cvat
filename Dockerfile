@@ -1,61 +1,103 @@
-FROM ubuntu:20.04 as build-image
+# syntax=docker/dockerfile:1
 
-ARG http_proxy
-ARG https_proxy
-ARG no_proxy
-ARG socks_proxy
-ARG DJANGO_CONFIGURATION
+ARG BASE_IMAGE=ubuntu:24.04
+
+FROM ${BASE_IMAGE} AS build-image-base
 
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get --no-install-recommends install -yq \
-        apache2-dev \
-        build-essential \
+        cargo-1.85 \
         curl \
-        libldap2-dev \
-        libsasl2-dev \
-        nasm \
+        g++ \
+        gcc \
         git \
+        libhdf5-dev \
+        libldap2-dev \
+        libmp3lame-dev \
+        libsasl2-dev \
+        make \
+        nasm \
         pkg-config \
         python3-dev \
         python3-pip \
-        python3-venv && \
-    rm -rf /var/lib/apt/lists/*
+    && update-alternatives \
+        --install /usr/bin/rustc rustc /usr/bin/rustc-1.85 185 \
+        --slave /usr/bin/cargo cargo /usr/bin/cargo-1.85 \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# We build OpenH264, FFmpeg and PyAV in a separate build stage,
+# because this way Docker can do it in parallel to all the other packages.
+FROM build-image-base AS build-image-av
 
 # Compile Openh264 and FFmpeg
 ARG PREFIX=/opt/ffmpeg
 ARG PKG_CONFIG_PATH=${PREFIX}/lib/pkgconfig
 
-ENV FFMPEG_VERSION=4.3.1 \
-    OPENH264_VERSION=2.1.1
+ENV FFMPEG_VERSION=8.0 \
+    OPENH264_VERSION=2.6.0
 
 WORKDIR /tmp/openh264
-RUN curl -sL https://github.com/cisco/openh264/archive/v${OPENH264_VERSION}.tar.gz --output openh264-${OPENH264_VERSION}.tar.gz && \
-    tar -zx --strip-components=1 -f openh264-${OPENH264_VERSION}.tar.gz && \
-    make -j5 && make install PREFIX=${PREFIX} && make clean
+RUN curl --fail --location --retry 5 --retry-all-errors --show-error --silent \
+        https://github.com/cisco/openh264/archive/v${OPENH264_VERSION}.tar.gz \
+        --output /tmp/openh264.tar.gz && \
+    tar -zxf /tmp/openh264.tar.gz --strip-components=1 && \
+    rm /tmp/openh264.tar.gz && \
+    make -j5 && make install-shared PREFIX=${PREFIX} && make clean
 
 WORKDIR /tmp/ffmpeg
-RUN curl -sL https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.bz2 --output - | \
-    tar -jx --strip-components=1 && \
-    ./configure --disable-nonfree --disable-gpl --enable-libopenh264 --enable-shared --disable-static --prefix="${PREFIX}" && \
-    # make clean keeps the configuration files that let to know how the original sources were used to create the binary
-    make -j5 && make install && make clean && \
-    tar -zcf "/tmp/ffmpeg-$FFMPEG_VERSION.tar.gz" . && mv "/tmp/ffmpeg-$FFMPEG_VERSION.tar.gz" .
+RUN curl --fail --location --retry 5 --retry-all-errors --show-error --silent \
+        https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.gz \
+        --output /tmp/ffmpeg.tar.gz && \
+    tar -zxf /tmp/ffmpeg.tar.gz --strip-components=1 && \
+    rm /tmp/ffmpeg.tar.gz && \
+    ./configure --disable-nonfree --disable-gpl --enable-libopenh264 --enable-libmp3lame \
+        --enable-shared --disable-static --disable-doc --disable-programs --prefix="${PREFIX}" && \
+    make -j5 && make install && make clean
 
-# Install requirements
-RUN python3 -m venv /opt/venv
-ENV PATH="/opt/venv/bin:${PATH}"
-RUN python3 -m pip install --no-cache-dir -U pip==21.0.1 setuptools==53.0.0 wheel==0.36.2
-COPY cvat/requirements/ /tmp/requirements/
-RUN DATUMARO_HEADLESS=1 python3 -m pip install --no-cache-dir -r /tmp/requirements/${DJANGO_CONFIGURATION}.txt
+COPY utils/dataset_manifest/requirements.txt /tmp/utils/dataset_manifest/requirements.txt
 
+# Since we're using pip-compile-multi, each dependency can only be listed in
+# one requirements file. In the case of PyAV, that should be
+# `dataset_manifest/requirements.txt`. Make sure it's actually there,
+# and then remove everything else.
+RUN grep -q '^av==' /tmp/utils/dataset_manifest/requirements.txt
+RUN sed -i '/^av==/!d' /tmp/utils/dataset_manifest/requirements.txt
 
-FROM ubuntu:20.04
+RUN --mount=type=cache,target=/root/.cache/pip/http-v2 \
+    python3 -m pip wheel --no-binary=av \
+    -r /tmp/utils/dataset_manifest/requirements.txt \
+    -w /tmp/wheelhouse
+
+# This stage builds wheels for all dependencies (except PyAV)
+FROM build-image-base AS build-image
+
+COPY cvat/requirements/ /tmp/cvat/requirements/
+COPY utils/dataset_manifest/requirements.txt /tmp/utils/dataset_manifest/requirements.txt
+
+# Exclude av from the requirements file
+RUN sed -i '/^av==/d' /tmp/utils/dataset_manifest/requirements.txt
+
+ARG CVAT_CONFIGURATION="production"
+
+# The lxml and xmlsec wheels must bundle compatible libxml2 versions.
+RUN --mount=type=cache,target=/root/.cache/pip/http-v2 \
+    DATUMARO_HEADLESS=1 python3 -m pip wheel --no-deps --only-binary lxml,xmlsec \
+    -r /tmp/cvat/requirements/${CVAT_CONFIGURATION}.txt \
+    -w /tmp/wheelhouse
+
+FROM golang:1.27.3 AS build-smokescreen
+
+RUN GOBIN=/tmp go install github.com/stripe/smokescreen@5b4b7aabca9bc70a8435358d648edd03294c299e
+
+FROM ${BASE_IMAGE}
 
 ARG http_proxy
 ARG https_proxy
 ARG no_proxy
 ARG socks_proxy
-ARG TZ
+ARG TZ="Etc/UTC"
 
 ENV TERM=xterm \
     http_proxy=${http_proxy}   \
@@ -66,93 +108,111 @@ ENV TERM=xterm \
     LC_ALL='C.UTF-8' \
     TZ=${TZ}
 
-ARG USER
-ARG DJANGO_CONFIGURATION
-ENV DJANGO_CONFIGURATION=${DJANGO_CONFIGURATION}
+ARG USER="django"
+ARG CVAT_CONFIGURATION="production"
+ENV DJANGO_SETTINGS_MODULE="cvat.settings.${CVAT_CONFIGURATION}"
 
 # Install necessary apt packages
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get --no-install-recommends install -yq \
-        apache2 \
+        adduser \
+        bzip2 \
         ca-certificates \
-        libapache2-mod-xsendfile \
-        libgomp1 \
-        libgl1 \
-        supervisor \
-        libldap-2.4-2 \
-        libsasl2-2 \
-        libpython3-dev \
-        tzdata \
-        python3-distutils \
-        p7zip-full \
+        curl \
         git \
-        git-lfs \
+        libgl1 \
+        libgomp1 \
+        libldap2 \
+        libmp3lame0 \
+        libpython3.12t64 \
+        libsasl2-2 \
+        nginx \
+        p7zip-full \
         poppler-utils \
-        ssh \
-        curl && \
-    ln -fs /usr/share/zoneinfo/${TZ} /etc/localtime && \
+        python3 \
+        python3-venv \
+        supervisor \
+        tzdata \
+        unrar \
+        wait-for-it \
+    && ln -fs /usr/share/zoneinfo/${TZ} /etc/localtime && \
     dpkg-reconfigure -f noninteractive tzdata && \
-    rm -rf /var/lib/apt/lists/* && \
-    echo 'application/wasm wasm' >> /etc/mime.types
+    rm -rf /var/lib/apt/lists/*
+
+# Install smokescreen
+COPY --from=build-smokescreen /tmp/smokescreen /usr/local/bin/smokescreen
 
 # Add a non-root user
 ENV USER=${USER}
-ENV HOME /home/${USER}
-RUN adduser --shell /bin/bash --disabled-password --gecos "" ${USER} && \
-    if [ -z ${socks_proxy} ]; then \
-        echo export "GIT_SSH_COMMAND=\"ssh -o StrictHostKeyChecking=no -o ConnectTimeout=30\"" >> ${HOME}/.bashrc; \
-    else \
-        echo export "GIT_SSH_COMMAND=\"ssh -o StrictHostKeyChecking=no -o ConnectTimeout=30 -o ProxyCommand='nc -X 5 -x ${socks_proxy} %h %p'\"" >> ${HOME}/.bashrc; \
-    fi
+RUN deluser --remove-home ubuntu && \
+    adduser --uid=1000 --shell /bin/bash --disabled-password --gecos "" ${USER}
+ENV CVAT_BASE_DIR=/home/${USER}
 
 ARG CLAM_AV="no"
 RUN if [ "$CLAM_AV" = "yes" ]; then \
         apt-get update && \
         apt-get --no-install-recommends install -yq \
             clamav \
-            libclamunrar9 && \
+            libclamunrar && \
         sed -i 's/ReceiveTimeout 30/ReceiveTimeout 300/g' /etc/clamav/freshclam.conf && \
         freshclam && \
         chown -R ${USER}:${USER} /var/lib/clamav && \
         rm -rf /var/lib/apt/lists/*; \
     fi
 
-ARG INSTALL_SOURCES='no'
-WORKDIR ${HOME}/sources
-RUN if [ "$INSTALL_SOURCES" = "yes" ]; then \
-        sed -Ei 's/^# deb-src /deb-src /' /etc/apt/sources.list && \
-        apt-get update && \
-        dpkg --get-selections | while read -r line; do        \
-            package=$(echo "$line" | awk '{print $1}');       \
-            mkdir "$package";                                 \
-            (                                                 \
-                cd "$package";                                \
-                apt-get -q --download-only source "$package"; \
-            )                                                 \
-            done &&                                           \
-        rm -rf /var/lib/apt/lists/*;                          \
-    fi
-COPY --from=build-image /tmp/openh264/openh264*.tar.gz /tmp/ffmpeg/ffmpeg*.tar.gz ${HOME}/sources/
-
-# Copy python virtual enviroment and FFmpeg binaries from build-image
-COPY --from=build-image /opt/venv /opt/venv
+# Install wheels from the build image
+RUN python3 -m venv /opt/venv
 ENV PATH="/opt/venv/bin:${PATH}"
-COPY --from=build-image /opt/ffmpeg /usr
+ARG PIP_DISABLE_PIP_VERSION_CHECK=1
+
+RUN --mount=type=bind,from=build-image,source=/tmp/wheelhouse,target=/mnt/wheelhouse \
+    --mount=type=bind,from=build-image-av,source=/tmp/wheelhouse,target=/mnt/wheelhouse-av \
+    python -m pip install --no-index /mnt/wheelhouse/*.whl /mnt/wheelhouse-av/*.whl
+
+ENV NUMPROCS=1
+COPY --from=build-image-av /opt/ffmpeg/lib /usr/lib
+
+# These variables are required for supervisord substitutions in files
+# This library allows remote python debugging with VS Code
+ARG CVAT_DEBUG_ENABLED
+RUN if [ "${CVAT_DEBUG_ENABLED}" = 'yes' ]; then \
+        python3 -m pip install --no-cache-dir debugpy; \
+    fi
+
+# Removing pip due to security reasons. See: https://scout.docker.com/vulnerabilities/id/CVE-2018-20225
+# The vulnerability is dubious and we don't use pip at runtime, but some vulnerability scanners mark it as a high vulnerability,
+# and it was decided to remove pip from the final image
+RUN python -m pip uninstall -y pip
 
 # Install and initialize CVAT, copy all necessary files
-COPY --chown=${USER} components /tmp/components
-COPY --chown=${USER} ssh ${HOME}/.ssh
-COPY --chown=${USER} supervisord.conf mod_wsgi.conf wait-for-it.sh manage.py ${HOME}/
-COPY --chown=${USER} cvat/ ${HOME}/cvat
-COPY --chown=${USER} utils/ ${HOME}/utils
-COPY --chown=${USER} tests/ ${HOME}/tests
+COPY cvat/nginx.conf /etc/nginx/nginx.conf
+COPY --parents \
+    backend_entrypoint.d cvat supervisord utils \
+    backend_entrypoint.sh \
+    components/analytics/clickhouse/init.py \
+    manage.py \
+    rqscheduler.py \
+    wait_for_deps.sh \
+    /opt/cvat/
 
-# RUN all commands below as 'django' user
-USER ${USER}
-WORKDIR ${HOME}
+RUN python -m compileall -q /opt/cvat
 
-RUN mkdir data share media keys logs /tmp/supervisord
-RUN python3 manage.py collectstatic
+# Link manage.py to the home directory for backwards compatibility.
+RUN ln -s /opt/cvat/manage.py ${CVAT_BASE_DIR}/manage.py
+
+RUN echo "/opt/cvat" > /opt/venv/lib/python3.12/site-packages/cvat.pth
+
+ARG COVERAGE_PROCESS_START
+RUN if [ "${COVERAGE_PROCESS_START}" ]; then \
+        echo "import coverage; coverage.process_startup()" > /opt/venv/lib/python3.12/site-packages/coverage_subprocess.pth; \
+    fi
+
+# RUN all commands below as 'django' user.
+# Use numeric UID/GID so that the image is compatible with the Kubernetes runAsNonRoot setting.
+USER 1000:1000
+WORKDIR ${CVAT_BASE_DIR}
+
+RUN mkdir -p data share keys logs /tmp/supervisord /tmp/cvat static
 
 EXPOSE 8080
-ENTRYPOINT ["/usr/bin/supervisord"]
+ENTRYPOINT ["/opt/cvat/backend_entrypoint.sh"]

@@ -1,31 +1,59 @@
-// Copyright (C) 2020-2021 Intel Corporation
+// Copyright (C) 2020-2022 Intel Corporation
+// Copyright (C) CVAT.ai Corporation
 //
 // SPDX-License-Identifier: MIT
 
 import React from 'react';
-import ReactDOM from 'react-dom';
+import { createRoot } from 'react-dom/client';
 import { connect, Provider } from 'react-redux';
 import { BrowserRouter } from 'react-router-dom';
+import dayjs from 'dayjs';
+import advancedFormat from 'dayjs/plugin/advancedFormat';
+import customParseFormat from 'dayjs/plugin/customParseFormat';
+import localeData from 'dayjs/plugin/localeData';
+import relativeTime from 'dayjs/plugin/relativeTime';
+import weekday from 'dayjs/plugin/weekday';
+import weekOfYear from 'dayjs/plugin/weekOfYear';
+import weekYear from 'dayjs/plugin/weekYear';
+import duration from 'dayjs/plugin/duration';
 
 import { getAboutAsync } from 'actions/about-actions';
-import { authorizedAsync, loadAuthActionsAsync } from 'actions/auth-actions';
+import { authenticatedAsync } from 'actions/auth-actions';
 import { getFormatsAsync } from 'actions/formats-actions';
 import { getModelsAsync } from 'actions/models-actions';
 import { getPluginsAsync } from 'actions/plugins-actions';
-import { switchSettingsDialog } from 'actions/settings-actions';
-import { shortcutsActions } from 'actions/shortcuts-actions';
 import { getUserAgreementsAsync } from 'actions/useragreements-actions';
 import CVATApplication from 'components/cvat-app';
+import PluginsEntrypoint from 'components/plugins-entrypoint';
 import LayoutGrid from 'components/layout-grid/layout-grid';
-import logger, { LogType } from 'cvat-logger';
+import { logError } from 'cvat-logger';
 import createCVATStore, { getCVATStore } from 'cvat-store';
-import { KeyMap } from 'utils/mousetrap-react';
 import createRootReducer from 'reducers/root-reducer';
-import { resetErrors, resetMessages } from './actions/notification-actions';
-import { CombinedState, NotificationsState } from './reducers/interfaces';
+import { activateOrganizationAsync } from 'actions/organization-actions';
+import { resetErrors, resetMessages } from 'actions/notification-actions';
+import { getInvitationsAsync } from 'actions/invitations-actions';
+import { getRequestsAsync } from 'actions/requests-async-actions';
+import { getServerAPISchemaAsync } from 'actions/server-actions';
+import { getGrowthDataAsync, updateGrowthDataAsync } from 'actions/growth-actions';
+import { navigationActions } from 'actions/navigation-actions';
+import { UserGrowthDataModifiableFields } from 'cvat-core-wrapper';
+import {
+    CombinedState, GrowthState, NotificationsState, PluginsState,
+} from './reducers';
+import './utils/dayjs-wrapper';
 
 createCVATStore(createRootReducer);
+
 const cvatStore = getCVATStore();
+
+dayjs.extend(customParseFormat);
+dayjs.extend(advancedFormat);
+dayjs.extend(relativeTime);
+dayjs.extend(weekday);
+dayjs.extend(localeData);
+dayjs.extend(weekOfYear);
+dayjs.extend(weekYear);
+dayjs.extend(duration);
 
 interface StateToProps {
     pluginsInitialized: boolean;
@@ -34,48 +62,56 @@ interface StateToProps {
     modelsFetching: boolean;
     userInitialized: boolean;
     userFetching: boolean;
+    organizationFetching: boolean;
+    organizationInitialized: boolean;
     aboutInitialized: boolean;
     aboutFetching: boolean;
     formatsInitialized: boolean;
     formatsFetching: boolean;
     userAgreementsInitialized: boolean;
     userAgreementsFetching: boolean;
-    authActionsFetching: boolean;
-    authActionsInitialized: boolean;
-    allowChangePassword: boolean;
-    allowResetPassword: boolean;
     notifications: NotificationsState;
     user: any;
-    keyMap: KeyMap;
-    isModelPluginActive: boolean;
+    growth: GrowthState;
+    pluginComponents: PluginsState['components'];
+    invitationsFetching: boolean;
+    invitationsInitialized: boolean;
+    requestsFetching: boolean;
+    requestsInitialized: boolean;
+    serverAPISchemaFetching: boolean;
+    serverAPISchemaInitialized: boolean;
+    isPasswordResetEnabled: boolean;
+    isRegistrationEnabled: boolean;
 }
 
 interface DispatchToProps {
     loadFormats: () => void;
-    verifyAuthorized: () => void;
+    verifyAuthenticated: () => void;
     loadAbout: () => void;
     initModels: () => void;
     initPlugins: () => void;
     resetErrors: () => void;
     resetMessages: () => void;
-    switchShortcutsDialog: () => void;
     loadUserAgreements: () => void;
-    switchSettingsDialog: () => void;
-    loadAuthActions: () => void;
+    loadOrganization: () => void;
+    initInvitations: () => void;
+    initRequests: () => void;
+    loadServerAPISchema: () => void;
+    loadGrowthData: () => void;
+    updateGrowthData: (fields: UserGrowthDataModifiableFields) => void;
+    onChangeLocation: (from: string, to: string) => void;
 }
 
 function mapStateToProps(state: CombinedState): StateToProps {
-    const { plugins } = state;
-    const { auth } = state;
-    const { formats } = state;
-    const { about } = state;
-    const { shortcuts } = state;
-    const { userAgreements } = state;
-    const { models } = state;
+    const {
+        plugins, auth, formats, about, userAgreements, models, organizations, invitations, serverAPI, requests, growth,
+    } = state;
 
     return {
         userInitialized: auth.initialized,
         userFetching: auth.fetching,
+        organizationFetching: organizations.fetching,
+        organizationInitialized: organizations.initialized,
         pluginsInitialized: plugins.initialized,
         pluginsFetching: plugins.fetching,
         modelsInitialized: models.initialized,
@@ -86,69 +122,60 @@ function mapStateToProps(state: CombinedState): StateToProps {
         formatsFetching: formats.fetching,
         userAgreementsInitialized: userAgreements.initialized,
         userAgreementsFetching: userAgreements.fetching,
-        authActionsFetching: auth.authActionsFetching,
-        authActionsInitialized: auth.authActionsInitialized,
-        allowChangePassword: auth.allowChangePassword,
-        allowResetPassword: auth.allowResetPassword,
         notifications: state.notifications,
         user: auth.user,
-        keyMap: shortcuts.keyMap,
-        isModelPluginActive: plugins.list.MODELS,
+        growth,
+        pluginComponents: plugins.components,
+        invitationsFetching: invitations.fetching,
+        invitationsInitialized: invitations.initialized,
+        requestsFetching: requests.fetching,
+        requestsInitialized: requests.initialized,
+        serverAPISchemaFetching: serverAPI.fetching,
+        serverAPISchemaInitialized: serverAPI.initialized,
+        isPasswordResetEnabled: serverAPI.configuration.isPasswordResetEnabled,
+        isRegistrationEnabled: serverAPI.configuration.isRegistrationEnabled,
     };
 }
 
 function mapDispatchToProps(dispatch: any): DispatchToProps {
     return {
         loadFormats: (): void => dispatch(getFormatsAsync()),
-        verifyAuthorized: (): void => dispatch(authorizedAsync()),
+        verifyAuthenticated: (): void => dispatch(authenticatedAsync()),
         loadUserAgreements: (): void => dispatch(getUserAgreementsAsync()),
         initPlugins: (): void => dispatch(getPluginsAsync()),
         initModels: (): void => dispatch(getModelsAsync()),
         loadAbout: (): void => dispatch(getAboutAsync()),
         resetErrors: (): void => dispatch(resetErrors()),
         resetMessages: (): void => dispatch(resetMessages()),
-        switchShortcutsDialog: (): void => dispatch(shortcutsActions.switchShortcutsDialog()),
-        switchSettingsDialog: (): void => dispatch(switchSettingsDialog()),
-        loadAuthActions: (): void => dispatch(loadAuthActionsAsync()),
+        loadOrganization: (): void => dispatch(activateOrganizationAsync()),
+        initInvitations: (): void => dispatch(getInvitationsAsync({}, true)),
+        initRequests: (): void => dispatch(getRequestsAsync()),
+        loadServerAPISchema: (): void => dispatch(getServerAPISchemaAsync()),
+        loadGrowthData: (): void => dispatch(getGrowthDataAsync()),
+        updateGrowthData: (fields: UserGrowthDataModifiableFields): void => (
+            dispatch(updateGrowthDataAsync(fields))
+        ),
+        onChangeLocation: (from: string, to: string): void => dispatch(navigationActions.changeLocation(from, to)),
     };
 }
 
 const ReduxAppWrapper = connect(mapStateToProps, mapDispatchToProps)(CVATApplication);
 
-ReactDOM.render(
+const root = createRoot(document.getElementById('root') as HTMLDivElement);
+root.render((
     <Provider store={cvatStore}>
         <BrowserRouter>
+            <PluginsEntrypoint />
             <ReduxAppWrapper />
         </BrowserRouter>
         <LayoutGrid />
-    </Provider>,
-    document.getElementById('root'),
-);
+    </Provider>
+));
+
+window.addEventListener('unhandledrejection', (event: PromiseRejectionEvent) => {
+    logError(event.reason, false, { type: 'unhandledrejection' });
+});
 
 window.addEventListener('error', (errorEvent: ErrorEvent) => {
-    if (
-        errorEvent.filename &&
-        typeof errorEvent.lineno === 'number' &&
-        typeof errorEvent.colno === 'number' &&
-        errorEvent.error
-    ) {
-        const logPayload = {
-            filename: errorEvent.filename,
-            line: errorEvent.lineno,
-            message: errorEvent.error.message,
-            column: errorEvent.colno,
-            stack: errorEvent.error.stack,
-        };
-
-        const store = getCVATStore();
-        const state: CombinedState = store.getState();
-        const { pathname } = window.location;
-        const re = RegExp(/\/tasks\/[0-9]+\/jobs\/[0-9]+$/);
-        const { instance: job } = state.annotation.job;
-        if (re.test(pathname) && job) {
-            job.logger.log(LogType.sendException, logPayload);
-        } else {
-            logger.log(LogType.sendException, logPayload);
-        }
-    }
+    logError(errorEvent.error, false, { type: 'error' });
 });

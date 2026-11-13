@@ -1,29 +1,34 @@
-// Copyright (C) 2020-2021 Intel Corporation
+// Copyright (C) 2020-2022 Intel Corporation
+// Copyright (C) CVAT.ai Corporation
 //
 // SPDX-License-Identifier: MIT
 
-import React, { useEffect, useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { connect } from 'react-redux';
 import { MenuFoldOutlined, MenuUnfoldOutlined } from '@ant-design/icons';
-import { SelectValue } from 'antd/lib/select';
 import Layout, { SiderProps } from 'antd/lib/layout';
 import Text from 'antd/lib/typography/Text';
 
-import { Canvas } from 'cvat-canvas-wrapper';
-import { LogType } from 'cvat-logger';
+import { filterApplicableLabels } from 'utils/filter-applicable-labels';
+import { Label, ObjectType } from 'cvat-core-wrapper';
 import {
     activateObject as activateObjectAction,
     changeFrameAsync,
     updateAnnotationsAsync,
 } from 'actions/annotation-actions';
+import { isAbleToChangeFrame } from 'utils/annotation';
+import getHiddenZLayers from 'utils/get-hidden-z-layers';
 import GlobalHotKeys, { KeyMap } from 'utils/mousetrap-react';
 import { ThunkDispatch } from 'utils/redux';
 import AppearanceBlock from 'components/annotation-page/appearance-block';
 import ObjectButtonsContainer from 'containers/annotation-page/standard-workspace/objects-side-bar/object-buttons';
-import { CombinedState, ObjectType } from 'reducers/interfaces';
+import { CombinedState } from 'reducers';
+import { registerComponentShortcuts } from 'actions/shortcuts-actions';
+import { ShortcutScope } from 'utils/enums';
+import { subKeyMap } from 'utils/component-subkeymap';
 import AttributeEditor from './attribute-editor';
 import AttributeSwitcher from './attribute-switcher';
-import ObjectBasicsEditor from './object-basics-edtior';
+import ObjectBasicsEditor from './object-basics-editor';
 import ObjectSwitcher from './object-switcher';
 
 interface StateToProps {
@@ -31,12 +36,10 @@ interface StateToProps {
     activatedAttributeID: number | null;
     states: any[];
     labels: any[];
-    jobInstance: any;
     keyMap: KeyMap;
     normalizedKeyMap: Record<string, string>;
-    canvasInstance: Canvas;
     canvasIsReady: boolean;
-    curZLayer: number;
+    hiddenZLayers: Set<number>;
 }
 
 interface DispatchToProps {
@@ -49,6 +52,53 @@ interface LabelAttrMap {
     [index: number]: any;
 }
 
+const componentShortcuts = {
+    NEXT_ATTRIBUTE: {
+        name: 'Next attribute',
+        description: 'Go to the next attribute',
+        sequences: ['down'],
+        scope: ShortcutScope.ATTRIBUTE_ANNOTATION_WORKSPACE,
+    },
+    PREVIOUS_ATTRIBUTE: {
+        name: 'Previous attribute',
+        description: 'Go to the previous attribute',
+        sequences: ['up'],
+        scope: ShortcutScope.ATTRIBUTE_ANNOTATION_WORKSPACE,
+    },
+    SWITCH_LOCK: {
+        name: 'Lock/unlock an object',
+        description: 'Change locked state for an active object',
+        sequences: ['l'],
+        scope: ShortcutScope.OBJECTS_SIDEBAR,
+    },
+    SWITCH_OCCLUDED: {
+        name: 'Switch occluded',
+        description: 'Change occluded property for an active object',
+        sequences: ['q', '/'],
+        scope: ShortcutScope.OBJECTS_SIDEBAR,
+    },
+    SWITCH_PINNED: {
+        name: 'Switch pinned property',
+        description: 'Change pinned property for an active object',
+        sequences: ['p'],
+        scope: ShortcutScope.OBJECTS_SIDEBAR,
+    },
+    NEXT_KEY_FRAME: {
+        name: 'Next keyframe',
+        description: 'Go to the next keyframe of an active track',
+        sequences: ['r'],
+        scope: ShortcutScope.OBJECTS_SIDEBAR,
+    },
+    PREV_KEY_FRAME: {
+        name: 'Previous keyframe',
+        description: 'Go to the previous keyframe of an active track',
+        sequences: ['e'],
+        scope: ShortcutScope.OBJECTS_SIDEBAR,
+    },
+};
+
+registerComponentShortcuts(componentShortcuts);
+
 function mapStateToProps(state: CombinedState): StateToProps {
     const {
         annotation: {
@@ -56,32 +106,29 @@ function mapStateToProps(state: CombinedState): StateToProps {
                 activatedStateID,
                 activatedAttributeID,
                 states,
-                zLayer: { cur },
             },
-            job: { instance: jobInstance, labels },
-            canvas: { instance: canvasInstance, ready: canvasIsReady },
+            job: { labels },
+            canvas: { ready: canvasIsReady },
         },
         shortcuts: { keyMap, normalizedKeyMap },
     } = state;
 
     return {
-        jobInstance,
         labels,
         activatedStateID,
         activatedAttributeID,
         states,
         keyMap,
         normalizedKeyMap,
-        canvasInstance,
         canvasIsReady,
-        curZLayer: cur,
+        hiddenZLayers: getHiddenZLayers(state),
     };
 }
 
 function mapDispatchToProps(dispatch: ThunkDispatch): DispatchToProps {
     return {
         activateObject(clientID: number, attrID: number): void {
-            dispatch(activateObjectAction(clientID, attrID));
+            dispatch(activateObjectAction(clientID, null, attrID));
         },
         updateAnnotations(states): void {
             dispatch(updateAnnotationsAsync(states));
@@ -98,18 +145,18 @@ function AttributeAnnotationSidebar(props: StateToProps & DispatchToProps): JSX.
         states,
         activatedStateID,
         activatedAttributeID,
-        jobInstance,
         updateAnnotations,
         changeFrame,
         activateObject,
         keyMap,
         normalizedKeyMap,
-        canvasInstance,
         canvasIsReady,
-        curZLayer,
+        hiddenZLayers,
     } = props;
 
-    const filteredStates = states.filter((state) => !state.outside && !state.hidden && state.zOrder <= curZLayer);
+    const filteredStates = states.filter((state) => (
+        !state.outside && !state.hidden && !hiddenZLayers.has(state.zOrder)
+    ));
     const [labelAttrMap, setLabelAttrMap] = useState(
         labels.reduce((acc, label): LabelAttrMap => {
             acc[label.id] = label.attributes.length ? label.attributes[0] : null;
@@ -124,8 +171,7 @@ function AttributeAnnotationSidebar(props: StateToProps & DispatchToProps): JSX.
 
         const listener = (event: TransitionEvent): void => {
             if (event.target && event.propertyName === 'width' && event.target === collapser) {
-                canvasInstance.fitCanvas();
-                canvasInstance.fit();
+                window.dispatchEvent(new Event('resize'));
                 (collapser as HTMLElement).removeEventListener('transitionend', listener as any);
             }
         };
@@ -143,6 +189,7 @@ function AttributeAnnotationSidebar(props: StateToProps & DispatchToProps): JSX.
         activatedStateID === null || activatedIndex === -1 ? null : filteredStates[activatedIndex];
 
     const activeAttribute = activeObjectState ? labelAttrMap[activeObjectState.label.id] : null;
+    const applicableLabels = activeObjectState ? filterApplicableLabels(activeObjectState, labels) : [];
 
     if (canvasIsReady) {
         if (activeObjectState) {
@@ -202,7 +249,7 @@ function AttributeAnnotationSidebar(props: StateToProps & DispatchToProps): JSX.
     const siderProps: SiderProps = {
         className: 'attribute-annotation-sidebar',
         theme: 'light',
-        width: 300,
+        width: 320,
         collapsedWidth: 0,
         reverseArrow: true,
         collapsible: true,
@@ -216,18 +263,7 @@ function AttributeAnnotationSidebar(props: StateToProps & DispatchToProps): JSX.
         }
     };
 
-    const subKeyMap = {
-        NEXT_ATTRIBUTE: keyMap.NEXT_ATTRIBUTE,
-        PREVIOUS_ATTRIBUTE: keyMap.PREVIOUS_ATTRIBUTE,
-        NEXT_OBJECT: keyMap.NEXT_OBJECT,
-        PREVIOUS_OBJECT: keyMap.PREVIOUS_OBJECT,
-        SWITCH_LOCK: keyMap.SWITCH_LOCK,
-        SWITCH_OCCLUDED: keyMap.SWITCH_OCCLUDED,
-        NEXT_KEY_FRAME: keyMap.NEXT_KEY_FRAME,
-        PREV_KEY_FRAME: keyMap.PREV_KEY_FRAME,
-    };
-
-    const handlers = {
+    const handlers: Record<keyof typeof componentShortcuts, (event?: KeyboardEvent) => void> = {
         NEXT_ATTRIBUTE: (event: KeyboardEvent | undefined) => {
             preventDefault(event);
             nextAttribute(1);
@@ -235,14 +271,6 @@ function AttributeAnnotationSidebar(props: StateToProps & DispatchToProps): JSX.
         PREVIOUS_ATTRIBUTE: (event: KeyboardEvent | undefined) => {
             preventDefault(event);
             nextAttribute(-1);
-        },
-        NEXT_OBJECT: (event: KeyboardEvent | undefined) => {
-            preventDefault(event);
-            nextObject(1);
-        },
-        PREVIOUS_OBJECT: (event: KeyboardEvent | undefined) => {
-            preventDefault(event);
-            nextObject(-1);
         },
         SWITCH_LOCK: (event: KeyboardEvent | undefined) => {
             preventDefault(event);
@@ -258,12 +286,19 @@ function AttributeAnnotationSidebar(props: StateToProps & DispatchToProps): JSX.
                 updateAnnotations([activeObjectState]);
             }
         },
+        SWITCH_PINNED: (event: KeyboardEvent | undefined) => {
+            preventDefault(event);
+            if (activeObjectState) {
+                activeObjectState.pinned = !activeObjectState.pinned;
+                updateAnnotations([activeObjectState]);
+            }
+        },
         NEXT_KEY_FRAME: (event: KeyboardEvent | undefined) => {
             preventDefault(event);
             if (activeObjectState && activeObjectState.objectType === ObjectType.TRACK) {
                 const frame =
                     typeof activeObjectState.keyframes.next === 'number' ? activeObjectState.keyframes.next : null;
-                if (frame !== null && canvasInstance.isAbleToChangeFrame()) {
+                if (frame !== null && isAbleToChangeFrame(frame)) {
                     changeFrame(frame);
                 }
             }
@@ -273,7 +308,7 @@ function AttributeAnnotationSidebar(props: StateToProps & DispatchToProps): JSX.
             if (activeObjectState && activeObjectState.objectType === ObjectType.TRACK) {
                 const frame =
                     typeof activeObjectState.keyframes.prev === 'number' ? activeObjectState.keyframes.prev : null;
-                if (frame !== null && canvasInstance.isAbleToChangeFrame()) {
+                if (frame !== null && isAbleToChangeFrame(frame)) {
                     changeFrame(frame);
                 }
             }
@@ -285,14 +320,12 @@ function AttributeAnnotationSidebar(props: StateToProps & DispatchToProps): JSX.
             <Layout.Sider {...siderProps}>
                 {/* eslint-disable-next-line */}
                 <span
-                    className={`cvat-objects-sidebar-sider
-                        ant-layout-sider-zero-width-trigger
-                        ant-layout-sider-zero-width-trigger-left`}
+                    className='cvat-objects-sidebar-sider'
                     onClick={collapse}
                 >
                     {sidebarCollapsed ? <MenuFoldOutlined title='Show' /> : <MenuUnfoldOutlined title='Hide' />}
                 </span>
-                <GlobalHotKeys keyMap={subKeyMap} handlers={handlers} />
+                <GlobalHotKeys keyMap={subKeyMap(componentShortcuts, keyMap)} handlers={handlers} />
                 <div className='cvat-sidebar-collapse-button-spacer' />
                 <ObjectSwitcher
                     currentLabel={activeObjectState.label.name}
@@ -304,17 +337,14 @@ function AttributeAnnotationSidebar(props: StateToProps & DispatchToProps): JSX.
                     nextObject={nextObject}
                 />
                 <ObjectBasicsEditor
-                    currentLabel={activeObjectState.label.name}
-                    labels={labels}
-                    changeLabel={(value: SelectValue): void => {
-                        const labelName = value as string;
-                        const [newLabel] = labels.filter((_label): boolean => _label.name === labelName);
-                        activeObjectState.label = newLabel;
+                    currentLabel={activeObjectState.label.id}
+                    labels={applicableLabels}
+                    changeLabel={(value: Label): void => {
+                        activeObjectState.label = value;
                         updateAnnotations([activeObjectState]);
                     }}
                 />
                 <ObjectButtonsContainer
-                    readonly={false}
                     clientID={activeObjectState.clientID}
                     outsideDisabled
                     hiddenDisabled
@@ -335,11 +365,6 @@ function AttributeAnnotationSidebar(props: StateToProps & DispatchToProps): JSX.
                             currentValue={activeObjectState.attributes[activeAttribute.id]}
                             onChange={(value: string) => {
                                 const { attributes } = activeObjectState;
-                                jobInstance.logger.log(LogType.changeAttribute, {
-                                    id: activeAttribute.id,
-                                    object_id: activeObjectState.clientID,
-                                    value,
-                                });
                                 attributes[activeAttribute.id] = value;
                                 activeObjectState.attributes = attributes;
                                 updateAnnotations([activeObjectState]);
@@ -361,9 +386,7 @@ function AttributeAnnotationSidebar(props: StateToProps & DispatchToProps): JSX.
         <Layout.Sider {...siderProps}>
             {/* eslint-disable-next-line */}
             <span
-                className={`cvat-objects-sidebar-sider
-                    ant-layout-sider-zero-width-trigger
-                    ant-layout-sider-zero-width-trigger-left`}
+                className='cvat-objects-sidebar-sider'
                 onClick={collapse}
             >
                 {sidebarCollapsed ? <MenuFoldOutlined title='Show' /> : <MenuUnfoldOutlined title='Hide' />}

@@ -1,4 +1,4 @@
-// Copyright (C) 2020-2021 Intel Corporation
+// Copyright (C) 2020-2022 Intel Corporation
 //
 // SPDX-License-Identifier: MIT
 
@@ -23,4 +23,5 @@ function FitControl(props: Props): JSX.Element {
     );
 }
 
+Object.assign(FitControl, { displayName: 'FitControl' });
 export default React.memo(FitControl);

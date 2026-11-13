@@ -1,53 +1,73 @@
-// Copyright (C) 2021 Intel Corporation
+// Copyright (C) 2021-2022 Intel Corporation
+// Copyright (C) CVAT.ai Corporation
 //
 // SPDX-License-Identifier: MIT
 
-import { KeyMap } from 'utils/mousetrap-react';
 import { connect } from 'react-redux';
-
-import { Canvas } from 'cvat-canvas-wrapper';
-import { hideShowContextImage } from 'actions/annotation-actions';
+import { KeyMap } from 'utils/mousetrap-react';
+import { Canvas3d } from 'cvat-canvas3d-wrapper';
+import {
+    updateActiveControl as updateActiveControlAction,
+    pasteShapeAsync,
+    redrawShapeAsync,
+    repeatDrawShapeAsync,
+    resetAnnotationsGroup,
+} from 'actions/annotation-actions';
 import ControlsSideBarComponent from 'components/annotation-page/standard3D-workspace/controls-side-bar/controls-side-bar';
-import { ActiveControl, CombinedState } from 'reducers/interfaces';
+import { ActiveControl, CombinedState } from 'reducers';
 
 interface StateToProps {
-    canvasInstance: Canvas;
+    canvasInstance: Canvas3d;
     activeControl: ActiveControl;
     keyMap: KeyMap;
     normalizedKeyMap: Record<string, string>;
-    contextImageHide: boolean;
-    loaded: boolean;
+    labels: any[];
+    jobInstance: any;
 }
 
 interface DispatchToProps {
-    hideShowContextImage(hidden: boolean): void;
+    repeatDrawShape(): void;
+    redrawShape(): void;
+    pasteShape(): void;
+    resetGroup(): void;
+    updateActiveControl(activeControl: ActiveControl): void;
 }
 
 function mapStateToProps(state: CombinedState): StateToProps {
     const {
         annotation: {
             canvas: { instance: canvasInstance, activeControl },
-            player: {
-                contextImage: { hidden: contextImageHide, loaded },
-            },
+            job: { labels, instance: jobInstance },
         },
         shortcuts: { keyMap, normalizedKeyMap },
     } = state;
 
     return {
-        canvasInstance,
+        canvasInstance: canvasInstance as Canvas3d,
         activeControl,
         normalizedKeyMap,
         keyMap,
-        contextImageHide,
-        loaded,
+        labels,
+        jobInstance,
     };
 }
 
 function dispatchToProps(dispatch: any): DispatchToProps {
     return {
-        hideShowContextImage(hidden: boolean): void {
-            dispatch(hideShowContextImage(hidden));
+        repeatDrawShape(): void {
+            dispatch(repeatDrawShapeAsync());
+        },
+        redrawShape(): void {
+            dispatch(redrawShapeAsync());
+        },
+        pasteShape(): void {
+            dispatch(pasteShapeAsync());
+        },
+        resetGroup(): void {
+            dispatch(resetAnnotationsGroup());
+        },
+        updateActiveControl(activeControl: ActiveControl): void {
+            dispatch(updateActiveControlAction(activeControl));
         },
     };
 }

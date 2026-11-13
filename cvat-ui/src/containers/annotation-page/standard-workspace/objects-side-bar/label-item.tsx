@@ -1,4 +1,4 @@
-// Copyright (C) 2020-2021 Intel Corporation
+// Copyright (C) 2020-2022 Intel Corporation
 //
 // SPDX-License-Identifier: MIT
 
@@ -8,12 +8,13 @@ import { connect } from 'react-redux';
 import { updateAnnotationsAsync } from 'actions/annotation-actions';
 
 import LabelItemComponent from 'components/annotation-page/standard-workspace/objects-side-bar/label-item';
-import { CombinedState, ObjectType } from 'reducers/interfaces';
+import { CombinedState } from 'reducers';
+import { ObjectType } from 'cvat-core-wrapper';
 
 interface OwnProps {
     labelID: number;
-    keyToLabelMapping: Record<string, number>;
-    updateLabelShortcutKey(updatedKey: string, labelID: number): void;
+    multiSelected: boolean;
+    onMouseDown(event: React.MouseEvent): void;
 }
 
 interface StateToProps {
@@ -81,7 +82,7 @@ class LabelItemContainer extends React.PureComponent<Props, State> {
         };
     }
 
-    static getDerivedStateFromProps(props: Props, state: State): State | null {
+    static getDerivedStateFromProps(props: Readonly<Props>, state: State): State | null {
         if (props.objectStates === state.objectStates) {
             return null;
         }
@@ -151,7 +152,7 @@ class LabelItemContainer extends React.PureComponent<Props, State> {
 
     public render(): JSX.Element {
         const {
-            labelName, labelColor, keyToLabelMapping, labelID, updateLabelShortcutKey,
+            labelName, labelColor, multiSelected, onMouseDown,
         } = this.props;
         const { visible, statesHidden, statesLocked } = this.state;
 
@@ -159,16 +160,15 @@ class LabelItemContainer extends React.PureComponent<Props, State> {
             <LabelItemComponent
                 labelName={labelName}
                 labelColor={labelColor}
-                labelID={labelID}
-                keyToLabelMapping={keyToLabelMapping}
                 visible={visible}
                 statesHidden={statesHidden}
                 statesLocked={statesLocked}
+                multiSelected={multiSelected}
+                onMouseDown={onMouseDown}
                 hideStates={this.hideStates}
                 showStates={this.showStates}
                 lockStates={this.lockStates}
                 unlockStates={this.unlockStates}
-                updateLabelShortcutKey={updateLabelShortcutKey}
             />
         );
     }

@@ -1,10 +1,15 @@
-// Copyright (C) 2020 Intel Corporation
+// Copyright (C) 2020-2022 Intel Corporation
+// Copyright (C) CVAT.ai Corporation
 //
 // SPDX-License-Identifier: MIT
 
 import { Action, ActionCreatorsMapObject, AnyAction } from 'redux';
+import { shallowEqual } from 'react-redux';
 import { ThunkAction as _ThunkAction, ThunkDispatch as _ThunkDispatch } from 'redux-thunk';
-import { CombinedState } from '../reducers/interfaces';
+import { CombinedState } from '../reducers';
+
+const typedShallowEqual = shallowEqual as <T>(left: T, right: T) => boolean;
+export { typedShallowEqual as shallowEqual };
 
 export interface ActionWithPayload<T, P> extends Action<T> {
     payload: P;
@@ -18,6 +23,6 @@ export function createAction<T extends string, P>(type: T, payload?: P): Action<
 
 export type ActionUnion<A extends ActionCreatorsMapObject> = ReturnType<A[keyof A]>;
 
-export type ThunkAction<R = {}, A extends Action = AnyAction> = _ThunkAction<R, CombinedState, {}, A>;
+export type ThunkAction<R = Promise<void>, A extends Action = AnyAction> = _ThunkAction<R, CombinedState, {}, A>;
 
 export type ThunkDispatch<E = {}, A extends Action = AnyAction> = _ThunkDispatch<CombinedState, E, A>;

@@ -1,22 +1,27 @@
-// Copyright (C) 2020 Intel Corporation
+// Copyright (C) 2020-2022 Intel Corporation
 //
 // SPDX-License-Identifier: MIT
 
-// eslint-disable-next-line no-undef
+/* eslint-disable
+    security/detect-non-literal-fs-filename,
+    no-use-before-define
+*/
+
 exports.createZipArchive = createZipArchive;
 
 const archiver = require('archiver');
 const fs = require('fs-extra');
 
 function createZipArchive(args) {
-    const directoryToArchive = args.directoryToArchive;
-    const output = fs.createWriteStream(args.arhivePath);
+    const { directoryToArchive, archivePath } = args;
+    const { level } = args;
+    const output = fs.createWriteStream(archivePath);
     const archive = archiver('zip', {
         gzip: true,
-        zlib: { level: 9 },
+        zlib: { level },
     });
 
-    archive.on('error', function (err) {
+    archive.on('error', (err) => {
         throw err;
     });
 
@@ -25,5 +30,5 @@ function createZipArchive(args) {
     archive.directory(`${directoryToArchive}/`, false);
     archive.finalize();
 
-    return fs.pathExists(archive);
+    return fs.pathExists(archivePath);
 }

@@ -1,97 +1,119 @@
-// Copyright (C) 2020 Intel Corporation
+// Copyright (C) 2021-2022 Intel Corporation
+// Copyright (C) CVAT.ai Corporation
 //
 // SPDX-License-Identifier: MIT
 
-import React, { MutableRefObject } from 'react';
-import copy from 'copy-to-clipboard';
+import React from 'react';
 import { connect } from 'react-redux';
 
-import { LogType } from 'cvat-logger';
 import {
-    collapseObjectItems,
     updateAnnotationsAsync,
     changeFrameAsync,
-    removeObjectAsync,
     changeGroupColorAsync,
     pasteShapeAsync,
+    updateActiveControl as updateActiveControlAction,
     copyShape as copyShapeAction,
     activateObject as activateObjectAction,
-    propagateObject as propagateObjectAction,
+    switchPropagateVisibility as switchPropagateVisibilityAction,
+    switchSimplifyVisibility as switchSimplifyVisibilityAction,
+    removeObject as removeObjectAction,
+    collapseObjectItems,
+    selectObjectsAsync,
 } from 'actions/annotation-actions';
 import {
-    ActiveControl, CombinedState, ColorBy, ShapeType,
-} from 'reducers/interfaces';
+    ActiveControl, CombinedState, ColorBy, isMultiSelectionSupported,
+} from 'reducers';
+import { openAnnotationsActionModal } from 'components/annotation-page/annotations-actions/annotations-actions-modal';
 import ObjectStateItemComponent from 'components/annotation-page/standard-workspace/objects-side-bar/object-item';
-import { ToolsControlComponent } from 'components/annotation-page/standard-workspace/controls-side-bar/tools-control';
+import { getObjectStateColor } from 'components/annotation-page/standard-workspace/objects-side-bar/shared';
+import openCVWrapper from 'utils/opencv-wrapper/opencv-wrapper';
 import { shift } from 'utils/math';
+import {
+    Label, ObjectState, Attribute, Job, ShapeType, ObjectType,
+} from 'cvat-core-wrapper';
+import { Canvas, CanvasMode } from 'cvat-canvas-wrapper';
+import { Canvas3d } from 'cvat-canvas3d-wrapper';
+import { filterApplicableLabels } from 'utils/filter-applicable-labels';
+import { toClipboard } from 'utils/to-clipboard';
+import changeObjectOrientation, { type OrientationAngle } from 'utils/change-object-orientation';
+import { getObjectStateByClientID } from 'utils/objects-sidebar';
 
 interface OwnProps {
-    readonly: boolean;
     clientID: number;
-    objectStates: any[];
-    initialCollapsed: boolean;
+    objectStates: ObjectState[];
+    visibleObjectIDs?: number[];
+    visibleSkeletonElements?: Record<number, number[]>;
+    zLayerDragProps?: React.HTMLAttributes<HTMLElement>;
+    zLayerDragging?: boolean;
+    partsExpanded?: boolean;
+    onPartsExpandedChange?(clientID: number, expanded: boolean): void;
 }
 
 interface StateToProps {
-    objectState: any;
-    collapsed: boolean;
-    labels: any[];
-    attributes: any[];
-    jobInstance: any;
+    objectState: ObjectState;
+    editingStateID: number | null;
+    labels: Label[];
+    attributes: Attribute[];
+    jobInstance: Job;
     frameNumber: number;
     activated: boolean;
+    multiSelected: boolean;
+    multiSelectionSupported: boolean;
+    selectedStatesID: number[];
     colorBy: ColorBy;
     ready: boolean;
     activeControl: ActiveControl;
     minZLayer: number;
     maxZLayer: number;
     normalizedKeyMap: Record<string, string>;
-    aiToolsRef: MutableRefObject<ToolsControlComponent>;
+    canvasInstance: Canvas | Canvas3d;
+    focusedObjectPadding: number;
 }
 
 interface DispatchToProps {
     changeFrame(frame: number): void;
-    updateState(objectState: any): void;
-    collapseOrExpand(objectStates: any[], collapsed: boolean): void;
-    activateObject: (activatedStateID: number | null) => void;
-    removeObject: (sessionInstance: any, objectState: any) => void;
-    copyShape: (objectState: any) => void;
-    propagateObject: (objectState: any) => void;
+    updateState(objectState: ObjectState): void;
+    activateObject: (activatedStateID: number | null, activatedElementID: number | null) => void;
+    removeObject: (objectState: ObjectState) => void;
+    copyShape: (objectState: ObjectState) => void;
+    switchPropagateVisibility: (visible: boolean) => void;
+    switchSimplifyVisibility: (clientID: number | null) => void;
     changeGroupColor(group: number, color: string): void;
+    updateActiveControl(activeControl: ActiveControl): void;
+    expandObject(objectState: ObjectState): void;
+    selectObjects(selectedStatesID: number[]): void;
 }
 
 function mapStateToProps(state: CombinedState, own: OwnProps): StateToProps {
     const {
         annotation: {
             annotations: {
-                collapsed: statesCollapsed,
                 activatedStateID,
+                selectedStatesID,
                 zLayer: { min: minZLayer, max: maxZLayer },
             },
             job: { attributes: jobAttributes, instance: jobInstance, labels },
             player: {
                 frame: { number: frameNumber },
             },
-            canvas: { ready, activeControl },
-            aiToolsRef,
+            canvas: { instance: canvasInstance, ready, activeControl },
+            editing: { objectState: editingState },
+            workspace,
         },
         settings: {
             shapes: { colorBy },
+            workspace: { focusedObjectPadding },
         },
         shortcuts: { normalizedKeyMap },
     } = state;
 
-    const { objectStates: states, initialCollapsed, clientID } = own;
-    const stateIDs = states.map((_state: any): number => _state.clientID);
-    const index = stateIDs.indexOf(clientID);
-
-    const collapsedState =
-        typeof statesCollapsed[clientID] === 'undefined' ? initialCollapsed : statesCollapsed[clientID];
+    const { objectStates: states, clientID } = own;
+    const objectState = getObjectStateByClientID(states, clientID)!;
 
     return {
-        objectState: states[index],
-        collapsed: collapsedState,
-        attributes: jobAttributes[states[index].label.id],
+        objectState,
+        editingStateID: editingState?.clientID ?? null,
+        attributes: jobAttributes[objectState.label.id as number],
         labels,
         ready,
         activeControl,
@@ -99,10 +121,14 @@ function mapStateToProps(state: CombinedState, own: OwnProps): StateToProps {
         jobInstance,
         frameNumber,
         activated: activatedStateID === clientID,
+        multiSelected: isMultiSelectionSupported(workspace) && selectedStatesID.includes(clientID),
+        multiSelectionSupported: isMultiSelectionSupported(workspace),
+        selectedStatesID,
         minZLayer,
         maxZLayer,
         normalizedKeyMap,
-        aiToolsRef,
+        canvasInstance: canvasInstance as Canvas | Canvas3d,
+        focusedObjectPadding,
     };
 }
 
@@ -111,55 +137,128 @@ function mapDispatchToProps(dispatch: any): DispatchToProps {
         changeFrame(frame: number): void {
             dispatch(changeFrameAsync(frame));
         },
-        updateState(state: any): void {
-            dispatch(updateAnnotationsAsync([state]));
-        },
-        collapseOrExpand(objectStates: any[], collapsed: boolean): void {
-            dispatch(collapseObjectItems(objectStates, collapsed));
+        updateState(state: any): Promise<void> {
+            return dispatch(updateAnnotationsAsync([state]));
         },
         activateObject(activatedStateID: number | null): void {
-            dispatch(activateObjectAction(activatedStateID, null));
+            dispatch(activateObjectAction(activatedStateID, null, null));
         },
-        removeObject(sessionInstance: any, objectState: any): void {
-            dispatch(removeObjectAsync(sessionInstance, objectState, true));
+        removeObject(objectState: any): void {
+            dispatch(removeObjectAction(objectState, false));
         },
         copyShape(objectState: any): void {
             dispatch(copyShapeAction(objectState));
             dispatch(pasteShapeAsync());
         },
-        propagateObject(objectState: any): void {
-            dispatch(propagateObjectAction(objectState));
+        switchPropagateVisibility(visible: boolean): void {
+            dispatch(switchPropagateVisibilityAction(visible));
+        },
+        switchSimplifyVisibility(clientID: number | null): void {
+            dispatch(switchSimplifyVisibilityAction(clientID));
         },
         changeGroupColor(group: number, color: string): void {
             dispatch(changeGroupColorAsync(group, color));
+        },
+        updateActiveControl(activeControl: ActiveControl): void {
+            dispatch(updateActiveControlAction(activeControl));
+        },
+        expandObject(objectState: ObjectState): void {
+            dispatch(collapseObjectItems([objectState], false));
+        },
+        selectObjects(selectedStatesID: number[]): void {
+            dispatch(selectObjectsAsync(selectedStatesID));
         },
     };
 }
 
 type Props = StateToProps & DispatchToProps & OwnProps;
-class ObjectItemContainer extends React.PureComponent<Props> {
-    private copy = (): void => {
-        const { objectState, readonly, copyShape } = this.props;
-        if (!readonly) {
-            copyShape(objectState);
+interface State {
+    labels: Label[];
+}
+
+class ObjectItemContainer extends React.PureComponent<Props, State> {
+    public constructor(props: Props) {
+        super(props);
+        this.state = {
+            labels: props.labels,
+        };
+    }
+
+    public static getDerivedStateFromProps(props: Readonly<Props>, state: Readonly<State>): State | null {
+        const { objectState, labels } = props;
+        const applicableLabels = filterApplicableLabels(objectState, labels);
+        if (state.labels.length !== applicableLabels.length ||
+            state.labels.some((label, idx) => label.id !== applicableLabels[idx].id)) {
+            return {
+                ...state,
+                labels: applicableLabels,
+            };
         }
+
+        return null;
+    }
+
+    private copy = (): void => {
+        const { objectState, copyShape } = this.props;
+        copyShape(objectState);
     };
 
     private propagate = (): void => {
-        const { objectState, readonly, propagateObject } = this.props;
-        if (!readonly) {
-            propagateObject(objectState);
+        const { switchPropagateVisibility } = this.props;
+        switchPropagateVisibility(true);
+    };
+
+    private edit = (): void => {
+        const {
+            objectState, editingStateID, canvasInstance, updateActiveControl,
+        } = this.props;
+
+        if (canvasInstance instanceof Canvas &&
+            [ShapeType.POLYGON, ShapeType.MASK].includes(objectState.shapeType)
+        ) {
+            const mode = canvasInstance.mode();
+            const isEditingSameObject = mode === CanvasMode.EDIT && editingStateID === objectState.clientID;
+            if (mode !== CanvasMode.IDLE && !isEditingSameObject) {
+                canvasInstance.cancel();
+            }
+
+            updateActiveControl(ActiveControl.EDIT);
+            canvasInstance.edit({ enabled: true, state: objectState });
         }
+    };
+
+    private slice = async (): Promise<void> => {
+        const {
+            objectState, canvasInstance, updateActiveControl,
+        } = this.props;
+
+        if (canvasInstance instanceof Canvas &&
+            [ShapeType.POLYGON, ShapeType.MASK].includes(objectState.shapeType)
+        ) {
+            if (canvasInstance.mode() !== CanvasMode.IDLE) {
+                canvasInstance.cancel();
+            }
+
+            updateActiveControl(ActiveControl.SLICE);
+            canvasInstance.slice({
+                enabled: true,
+                getContour: openCVWrapper.getContourFromState,
+                clientID: objectState.clientID as number,
+            });
+        }
+    };
+
+    private requestSimplification = (): void => {
+        const { objectState, switchSimplifyVisibility } = this.props;
+        switchSimplifyVisibility(objectState.clientID as number);
     };
 
     private remove = (): void => {
         const {
-            objectState, jobInstance, readonly, removeObject,
+            objectState, removeObject,
         } = this.props;
 
-        if (!readonly) {
-            removeObject(jobInstance, objectState);
-        }
+        removeObject(objectState);
     };
 
     private createURL = (): void => {
@@ -168,79 +267,170 @@ class ObjectItemContainer extends React.PureComponent<Props> {
 
         const search = `frame=${frameNumber}&type=${objectState.objectType}&serverID=${objectState.serverID}`;
         const url = `${origin}${pathname}?${search}`;
-        copy(url);
+
+        toClipboard(url);
     };
 
     private switchOrientation = (): void => {
-        const { objectState, readonly, updateState } = this.props;
-        if (readonly) {
-            return;
-        }
+        const { objectState, updateState } = this.props;
 
         if (objectState.shapeType === ShapeType.CUBOID) {
             this.switchCuboidOrientation();
             return;
         }
 
-        const reducedPoints = objectState.points.reduce(
-            (acc: number[][], _: number, index: number, array: number[]): number[][] => {
-                if (index % 2) {
-                    acc.push([array[index - 1], array[index]]);
-                }
+        if ([ShapeType.POLYGON, ShapeType.POLYLINE].includes(objectState.shapeType)) {
+            const reducedPoints = (objectState.points as number[]).reduce(
+                (acc: number[][], _: number, index: number, array: number[]): number[][] => {
+                    if (index % 2) {
+                        acc.push([array[index - 1], array[index]]);
+                    }
 
-                return acc;
-            },
-            [],
-        );
+                    return acc;
+                },
+                [],
+            );
 
-        if (objectState.shapeType === ShapeType.POLYGON) {
-            objectState.points = reducedPoints.slice(0, 1).concat(reducedPoints.reverse().slice(0, -1)).flat();
-            updateState(objectState);
-        } else if (objectState.shapeType === ShapeType.POLYLINE) {
-            objectState.points = reducedPoints.reverse().flat();
-            updateState(objectState);
+            if (objectState.shapeType === ShapeType.POLYGON) {
+                objectState.points = reducedPoints.slice(0, 1).concat(reducedPoints.reverse().slice(0, -1)).flat();
+                updateState(objectState);
+            } else if (objectState.shapeType === ShapeType.POLYLINE) {
+                objectState.points = reducedPoints.reverse().flat();
+                updateState(objectState);
+            }
+        }
+    };
+
+    private changeOrientation = (degrees: OrientationAngle): void => {
+        const { objectState } = this.props;
+        if (changeObjectOrientation(objectState, degrees)) {
+            this.commit();
         }
     };
 
     private toBackground = (): void => {
-        const { objectState, readonly, minZLayer } = this.props;
+        const { objectState, minZLayer } = this.props;
 
-        if (!readonly) {
-            objectState.zOrder = minZLayer - 1;
-            this.commit();
-        }
+        objectState.zOrder = minZLayer - 1;
+        this.commit();
     };
 
     private toForeground = (): void => {
-        const { objectState, readonly, maxZLayer } = this.props;
+        const { objectState, maxZLayer } = this.props;
 
-        if (!readonly) {
-            objectState.zOrder = maxZLayer + 1;
-            this.commit();
-        }
+        objectState.zOrder = maxZLayer + 1;
+        this.commit();
     };
 
-    private activate = (): void => {
+    private readonly toOneLayerBackward = (): void => {
+        const { objectState } = this.props;
+
+        objectState.zOrder -= 1;
+        this.commit();
+    };
+
+    private readonly toOneLayerForward = (): void => {
+        const { objectState } = this.props;
+
+        objectState.zOrder += 1;
+        this.commit();
+    };
+
+    private readonly toSpecificLayer = (zOrder: number): void => {
+        const { objectState } = this.props;
+
+        objectState.zOrder = zOrder;
+        this.commit();
+    };
+
+    private activate = (activeElementID?: number): void => {
         const {
             objectState, ready, activeControl, activateObject,
         } = this.props;
 
         if (ready && activeControl === ActiveControl.CURSOR) {
-            activateObject(objectState.clientID);
+            activateObject(
+                objectState.clientID,
+                (Number.isInteger(activeElementID) ? activeElementID : null) as number | null,
+            );
         }
     };
 
-    private collapse = (): void => {
-        const { collapseOrExpand, objectState, collapsed } = this.props;
+    private activateSingle = (): void => {
+        const {
+            objectState, ready, activeControl, activateObject, selectObjects,
+            updateActiveControl, canvasInstance,
+        } = this.props;
+        if (!ready) return;
 
-        collapseOrExpand([objectState], !collapsed);
+        if (canvasInstance instanceof Canvas && activeControl === ActiveControl.SELECT) {
+            canvasInstance.selectObjects({ enabled: false });
+            updateActiveControl(ActiveControl.CURSOR);
+        }
+        selectObjects([]);
+        activateObject(objectState.clientID, null);
     };
 
-    private activateTracking = (): void => {
-        const { objectState, readonly, aiToolsRef } = this.props;
-        if (!readonly && aiToolsRef.current && aiToolsRef.current.trackingAvailable()) {
-            aiToolsRef.current.trackState(objectState);
+    private toggleSelection = (): void => {
+        const {
+            objectState, selectedStatesID, selectObjects,
+        } = this.props;
+        if (objectState.objectType === ObjectType.TAG) return;
+        const clientID = objectState.clientID as number;
+        const nextSelection = selectedStatesID.includes(clientID) ?
+            selectedStatesID.filter((selectedClientID: number): boolean => selectedClientID !== clientID) :
+            [...selectedStatesID, clientID];
+
+        selectObjects(nextSelection);
+    };
+
+    private selectRange = (): void => {
+        const {
+            objectState, objectStates, selectedStatesID, visibleObjectIDs: orderedObjectIDs, selectObjects,
+        } = this.props;
+        if (objectState.objectType === ObjectType.TAG) return;
+        const visibleObjectIDs = orderedObjectIDs || objectStates.map(
+            (state: ObjectState): number => state.clientID as number,
+        );
+        const clientID = objectState.clientID as number;
+        const anchorID = [...selectedStatesID].reverse().find(
+            (id: number): boolean => visibleObjectIDs.includes(id),
+        );
+
+        if (typeof anchorID !== 'number') {
+            selectObjects([...selectedStatesID, clientID]);
+            return;
         }
+
+        const from = visibleObjectIDs.indexOf(anchorID);
+        const to = visibleObjectIDs.indexOf(clientID);
+        if (from === -1 || to === -1) {
+            selectObjects([...selectedStatesID, clientID]);
+            return;
+        }
+        const range = visibleObjectIDs.slice(Math.min(from, to), Math.max(from, to) + 1);
+        const nextSelection = [...new Set([
+            ...selectedStatesID.filter((id: number): boolean => id !== clientID),
+            ...range.filter((id: number): boolean => id !== clientID),
+            clientID,
+        ])];
+        selectObjects(nextSelection);
+    };
+
+    private focusAndExpand = (): void => {
+        const {
+            objectState, canvasInstance, focusedObjectPadding, expandObject,
+        } = this.props;
+
+        if (objectState.objectType !== ObjectType.TAG) {
+            if (canvasInstance instanceof Canvas) {
+                canvasInstance.focus(objectState.clientID as number, focusedObjectPadding);
+            } else if (canvasInstance instanceof Canvas3d) {
+                canvasInstance.focus(objectState.clientID as number);
+            }
+        }
+
+        expandObject(objectState);
     };
 
     private changeColor = (color: string): void => {
@@ -249,32 +439,15 @@ class ObjectItemContainer extends React.PureComponent<Props> {
         if (colorBy === ColorBy.INSTANCE) {
             objectState.color = color;
             this.commit();
-        } else if (colorBy === ColorBy.GROUP) {
+        } else if (colorBy === ColorBy.GROUP && objectState.group) {
             changeGroupColor(objectState.group.id, color);
         }
     };
 
     private changeLabel = (label: any): void => {
-        const { objectState, readonly } = this.props;
-        if (!readonly) {
-            objectState.label = label;
-            this.commit();
-        }
-    };
-
-    private changeAttribute = (id: number, value: string): void => {
-        const { objectState, readonly, jobInstance } = this.props;
-        if (!readonly) {
-            jobInstance.logger.log(LogType.changeAttribute, {
-                id,
-                value,
-                object_id: objectState.clientID,
-            });
-            const attr: Record<number, string> = {};
-            attr[id] = value;
-            objectState.attributes = attr;
-            this.commit();
-        }
+        const { objectState } = this.props;
+        objectState.label = label;
+        this.commit();
     };
 
     private switchCuboidOrientation = (): void => {
@@ -282,12 +455,12 @@ class ObjectItemContainer extends React.PureComponent<Props> {
             return points[12] > points[0];
         }
 
-        const { objectState, readonly } = this.props;
+        const { objectState } = this.props;
 
-        if (!readonly) {
+        if (objectState.shapeType === ShapeType.CUBOID) {
+            const points = objectState.points as number[];
             this.resetCuboidPerspective(false);
-            objectState.points = shift(objectState.points, cuboidOrientationIsLeft(objectState.points) ? 4 : -4);
-
+            objectState.points = shift(points, cuboidOrientationIsLeft(points) ? 4 : -4);
             this.commit();
         }
     };
@@ -296,10 +469,10 @@ class ObjectItemContainer extends React.PureComponent<Props> {
         function cuboidOrientationIsLeft(points: number[]): boolean {
             return points[12] > points[0];
         }
-        const { objectState, readonly } = this.props;
+        const { objectState } = this.props;
 
-        if (!readonly) {
-            const { points } = objectState;
+        if (objectState.shapeType === ShapeType.CUBOID) {
+            const points = objectState.points as number[];
             const minD = {
                 x: (points[6] - points[2]) * 0.001,
                 y: (points[3] - points[1]) * 0.001,
@@ -326,65 +499,85 @@ class ObjectItemContainer extends React.PureComponent<Props> {
         }
     };
 
+    private runAnnotationAction = (): void => {
+        const { objectState } = this.props;
+        openAnnotationsActionModal({ defaultObjectState: objectState });
+    };
+
     private commit(): void {
-        const { objectState, readonly, updateState } = this.props;
-        if (!readonly) {
-            updateState(objectState);
-        }
+        const { objectState, updateState } = this.props;
+        updateState(objectState);
     }
 
     public render(): JSX.Element {
+        const { labels } = this.state;
         const {
             objectState,
-            collapsed,
-            labels,
             attributes,
             activated,
+            multiSelected,
+            multiSelectionSupported,
+            selectedStatesID,
             colorBy,
             normalizedKeyMap,
-            readonly,
+            jobInstance,
+            zLayerDragProps,
+            zLayerDragging,
+            visibleSkeletonElements = {},
+            partsExpanded,
+            onPartsExpandedChange,
         } = this.props;
-
-        let stateColor = '';
-        if (colorBy === ColorBy.INSTANCE) {
-            stateColor = objectState.color;
-        } else if (colorBy === ColorBy.GROUP) {
-            stateColor = objectState.group.color;
-        } else if (colorBy === ColorBy.LABEL) {
-            stateColor = objectState.label.color;
-        }
+        const elements = visibleSkeletonElements[objectState.clientID as number] ??
+            objectState.elements.map((el: ObjectState) => el.clientID as number);
 
         return (
             <ObjectStateItemComponent
-                readonly={readonly}
+                jobInstance={jobInstance}
+                zLayerDragProps={zLayerDragProps}
+                zLayerDragging={zLayerDragging}
                 activated={activated}
+                multiSelected={multiSelected}
+                selectionActive={multiSelectionSupported && selectedStatesID.length > 0}
+                multiSelectionSupported={multiSelectionSupported}
                 objectType={objectState.objectType}
                 shapeType={objectState.shapeType}
-                clientID={objectState.clientID}
+                clientID={objectState.clientID as number}
                 serverID={objectState.serverID}
                 locked={objectState.lock}
-                attrValues={{ ...objectState.attributes }}
-                labelID={objectState.label.id}
-                color={stateColor}
+                labelID={objectState.label.id as number}
+                isGroundTruth={objectState.isGroundTruth}
+                color={getObjectStateColor(objectState, colorBy).rgbComponents()}
                 attributes={attributes}
+                elements={elements}
+                partsExpanded={partsExpanded}
+                onPartsExpandedChange={onPartsExpandedChange}
                 normalizedKeyMap={normalizedKeyMap}
                 labels={labels}
                 colorBy={colorBy}
-                collapsed={collapsed}
                 activate={this.activate}
+                activateSingle={this.activateSingle}
+                toggleSelection={this.toggleSelection}
+                selectRange={this.selectRange}
+                focusAndExpand={this.focusAndExpand}
                 remove={this.remove}
                 copy={this.copy}
-                propagate={this.propagate}
                 createURL={this.createURL}
+                propagate={this.propagate}
                 switchOrientation={this.switchOrientation}
+                changeOrientation={this.changeOrientation}
                 toBackground={this.toBackground}
                 toForeground={this.toForeground}
+                toOneLayerBackward={this.toOneLayerBackward}
+                toOneLayerForward={this.toOneLayerForward}
+                toSpecificLayer={this.toSpecificLayer}
+                zOrder={objectState.zOrder}
                 changeColor={this.changeColor}
                 changeLabel={this.changeLabel}
-                changeAttribute={this.changeAttribute}
-                collapse={this.collapse}
-                activateTracking={this.activateTracking}
-                resetCuboidPerspective={() => this.resetCuboidPerspective()}
+                edit={this.edit}
+                slice={this.slice}
+                simplify={this.requestSimplification}
+                resetCuboidPerspective={this.resetCuboidPerspective}
+                runAnnotationAction={this.runAnnotationAction}
             />
         );
     }

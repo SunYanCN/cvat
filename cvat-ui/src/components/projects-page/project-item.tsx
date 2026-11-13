@@ -1,100 +1,120 @@
-// Copyright (C) 2020 Intel Corporation
+// Copyright (C) 2020-2022 Intel Corporation
+// Copyright (C) CVAT.ai Corporation
 //
 // SPDX-License-Identifier: MIT
 
-import React from 'react';
-import moment from 'moment';
+import React, { useCallback } from 'react';
+import dayjs from 'dayjs';
 import { useSelector } from 'react-redux';
 import { useHistory } from 'react-router';
 import Text from 'antd/lib/typography/Text';
-import Empty from 'antd/lib/empty';
-import Card from 'antd/lib/card';
-import Meta from 'antd/lib/card/Meta';
-import Dropdown from 'antd/lib/dropdown';
 import Button from 'antd/lib/button';
 import { MoreOutlined } from '@ant-design/icons';
 
-import { CombinedState, Project } from 'reducers/interfaces';
-import ProjectActionsMenuComponent from './actions-menu';
+import { CombinedState } from 'reducers';
+import { Project } from 'cvat-core-wrapper';
+import { useCardHeightHOC, useContextMenuClick } from 'utils/hooks';
+import Preview from 'components/common/preview';
+import ResourceCard from 'components/common/resource-card';
+import ProjectActionsComponent from './actions-menu';
+
+const useCardHeight = useCardHeightHOC({
+    containerClassName: 'cvat-projects-page',
+    siblingClassNames: ['cvat-projects-pagination', 'cvat-projects-page-top-bar'],
+    paddings: 72,
+    minHeight: 200,
+    numberOfRows: 3,
+});
 
 interface Props {
     projectInstance: Project;
+    selected: boolean;
+    onClick: (event: React.MouseEvent) => boolean;
 }
 
 export default function ProjectItemComponent(props: Props): JSX.Element {
-    const { projectInstance } = props;
+    const {
+        projectInstance: instance,
+        selected,
+        onClick,
+    } = props;
 
     const history = useHistory();
-    const ownerName = projectInstance.owner ? projectInstance.owner.username : null;
-    const updated = moment(projectInstance.updatedDate).fromNow();
+    const height = useCardHeight();
+    const { itemRef, handleContextMenuClick, handleContextMenuCapture } = useContextMenuClick<HTMLDivElement>();
+    const ownerName = instance.owner?.username;
+    const updated = dayjs(instance.updatedDate).fromNow();
     const deletes = useSelector((state: CombinedState) => state.projects.activities.deletes);
-    const deleted = projectInstance.id in deletes ? deletes[projectInstance.id] : false;
+    const deletingOrDeleted = instance.id in deletes;
+    const projectURL = `/projects/${instance.id}`;
 
-    let projectPreview = null;
-    if (projectInstance.tasks.length) {
-        // prettier-ignore
-        projectPreview = useSelector((state: CombinedState) => (
-            state.tasks.current.find((task) => task.instance.id === projectInstance.tasks[0].id)?.preview
-        ));
-    }
+    const onOpenProject = useCallback((event: React.MouseEvent): void => {
+        event.stopPropagation();
+        const cancel = onClick(event);
+        if (!cancel) {
+            history.push(projectURL);
+        }
+    }, [history, onClick, projectURL]);
 
-    const onOpenProject = (): void => {
-        history.push(`/projects/${projectInstance.id}`);
-    };
-
-    const style: React.CSSProperties = {};
-
-    if (deleted) {
-        style.pointerEvents = 'none';
-        style.opacity = 0.5;
-    }
+    const card = (
+        <ResourceCard
+            cardRef={itemRef}
+            id={instance.id}
+            preview={(
+                <Preview
+                    project={instance}
+                    loadingClassName='cvat-project-item-loading-preview'
+                    emptyPreviewClassName='cvat-project-item-empty-preview'
+                    previewWrapperClassName='cvat-projects-project-item-card-preview-wrapper'
+                    previewClassName='cvat-projects-project-item-card-preview'
+                />
+            )}
+            title={(
+                <Text
+                    ellipsis={{ tooltip: instance.name }}
+                    className='cvat-projects-project-item-title'
+                >
+                    {instance.name}
+                </Text>
+            )}
+            descriptions={[
+                {
+                    label: 'Owner',
+                    value: (
+                        <Text
+                            ellipsis={{ tooltip: ownerName }}
+                            className='cvat-resource-card-line'
+                        >
+                            {ownerName}
+                        </Text>
+                    ),
+                },
+                { label: 'Updated', value: updated },
+            ]}
+            contentClassName='cvat-projects-project-item-description'
+            menu={(
+                <Button
+                    className='cvat-project-details-button cvat-actions-menu-button'
+                    type='text'
+                    icon={<MoreOutlined />}
+                    onClick={handleContextMenuClick}
+                />
+            )}
+            selected={selected}
+            isDisabled={deletingOrDeleted}
+            className='cvat-projects-project-item-card'
+            style={{ height }}
+            onClick={onOpenProject}
+            onOpenInNewTab={() => window.open(projectURL, '_blank', 'noopener,noreferrer')}
+            onContextMenuCapture={handleContextMenuCapture}
+        />
+    );
 
     return (
-        <Card
-            cover={
-                projectPreview ? (
-                    <img
-                        className='cvat-projects-project-item-card-preview'
-                        src={projectPreview}
-                        alt='Preview'
-                        onClick={onOpenProject}
-                        aria-hidden
-                    />
-                ) : (
-                    <div className='cvat-projects-project-item-card-preview' onClick={onOpenProject} aria-hidden>
-                        <Empty description='No tasks' />
-                    </div>
-                )
-            }
-            size='small'
-            style={style}
-            className='cvat-projects-project-item-card'
-        >
-            <Meta
-                title={(
-                    <span onClick={onOpenProject} className='cvat-projects-project-item-title' aria-hidden>
-                        {projectInstance.name}
-                    </span>
-                )}
-                description={(
-                    <div className='cvat-porjects-project-item-description'>
-                        <div>
-                            {ownerName && (
-                                <>
-                                    <Text type='secondary'>{`Created ${ownerName ? `by ${ownerName}` : ''}`}</Text>
-                                    <br />
-                                </>
-                            )}
-                            <Text type='secondary'>{`Last updated ${updated}`}</Text>
-                        </div>
-                        <div>
-                            <Dropdown overlay={<ProjectActionsMenuComponent projectInstance={projectInstance} />}>
-                                <Button type='link' size='large' icon={<MoreOutlined />} />
-                            </Dropdown>
-                        </div>
-                    </div>
-                )}
-            />
-        </Card>
+        <ProjectActionsComponent
+            projectInstance={instance}
+            dropdownTrigger={['contextMenu']}
+            triggerElement={card}
+        />
     );
 }

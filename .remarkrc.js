@@ -1,9 +1,12 @@
 exports.settings = { bullet: '*', paddedTable: false };
 
 exports.plugins = [
+    'remark-frontmatter',
+    'remark-gfm',
     'remark-preset-lint-recommended',
     'remark-preset-lint-consistent',
-    ['remark-lint-list-item-indent', 'space'],
+    ['remark-lint-list-item-indent', 'one'],
+    ['remark-lint-no-undefined-references', { allow: ['create:task'] }],
     ['remark-lint-no-dead-urls', false], // Does not work because of github protection system
     ['remark-lint-maximum-line-length', 120],
     ['remark-lint-maximum-heading-length', 120],
